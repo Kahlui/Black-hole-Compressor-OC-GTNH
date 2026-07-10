@@ -1,3 +1,5 @@
+-- Read config closely. Writen by Kahlui/Zach With use of GPT 5.6 for GTNH 2.9 Beta 1
+
 local component = require("component")
 local sides = require("sides")
 local computer = require("computer")
