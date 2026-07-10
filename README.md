@@ -1,5 +1,7 @@
 Full featured BHC Automation. 
 
+Automation is verry verry simular to what is on the wiki as of 7/10/26
+
 Inside the BHC, place a screen (Tier 3), computer case (Tier 3), keyboard, adapter, redstone I/O, transposer (any tier), and neutronium energy cell. Sneak right-click the controller with an MFU and insert it into the adapter to wirelessly connect to the machine.
 Insert the bare minimum components into the computer case. These could be even lower tier but there is no reason not to use the best components.
 
