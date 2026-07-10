@@ -47,4 +47,3 @@ Launch the script by typing bhc. It automatically detects when items enter the b
 See Pictures inside repository for refrences to what it should look like. Code prompted by Kahlui/Zach Writen by GPT 5.6
 
 
-See
