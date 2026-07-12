@@ -1,584 +1,1276 @@
+-- Read config closely. Writen by Kahlui/Zach With use of GPT 5.6 for GTNH 2.9 Beta 1
+
 local component = require("component")
 local sides = require("sides")
 local computer = require("computer")
 
 local bhc = component.gt_machine
-local r = component.redstone
-local t = component.transposer
+local redstone = component.redstone
+local transposer = component.transposer
 
-local n = 0
+-- CTRL+ALT+C to stop the script.
 
--- CTRL+ALT+C to stop the script at any time.
+-- ========================= CONFIG =========================
 
--- ========= CONFIG =========
-
--- The Maximum Runtime (s) before closing. Include the base 100s.
-local maxRuntime = 660
-
--- The Target Stability (%) for halting decay.
--- The BHC requires this to be below 20%.
+local maxRuntime = 100
 local targetStability = 18
-
--- How long hasWork() must remain false before the script accepts
--- that the Black Hole was manually or unexpectedly closed.
+local emergencyCloseStability = 10
 local manualCloseConfirmSeconds = 5
+local sleepMessageInterval = 15
 
--- Whether or not to use collapsers.
+local closeWhenIdle = true
+local idleCloseSeconds = 10
+local minimumRuntimeBeforeIdleClose = 100
+
 local useCollapser = true
-
--- Whether or not to consume extra spacetime to save the last recipe.
 local voidProtection = true
 
--- Side Options: [north, south, east, west, up, down]
+-- Keep this true so the program visibly reports every second.
+local debugShowStatusEverySecond = false
 
--- Side of Redstone I/O with Wireless Receiver.
+-- Side Options: north, south, east, west, up, down
 local receiverSide = sides.north
-
--- Side of Redstone I/O with Wireless Transmitter.
 local transmitterSide = sides.south
-
--- Side of Redstone I/O with Black Hole Utility Hatch (Optional).
 local hatchSide = sides.down
-
--- Side of Transposer with ME Interface.
 local interfaceSide = sides.south
-
--- Side of Transposer with Super Stock Replenisher.
-local stockerSide = sides.up
-
--- Side of Transposer with Input Bus.
 local busSide = sides.down
 
--- ====== END CONFIG ======
+-- Every ST stocker touching the transposer.
+-- Each entry is read separately and then added together.
+local stockers = {
+  {name = "UP", side = sides.up},
+  {name = "WEST", side = sides.west}
+}
 
-local blackHoleStart = nil
-local stabilityReference = 100
-local stabilityReferenceTime = nil
-local spacetimeEnabled = false
-local lastSpacetimeAmount = nil
+-- ======================= END CONFIG =======================
 
-local function calcSpacetime(duration, amount)
-  local total = 0
+local state = {
+  seedInsertedAt = nil,
+  holeStart = nil,
+  stability = 100,
+  stabilityTime = nil,
+  spacetimeOn = false,
+  spacetimeOnAt = nil,
+  lastTank = nil,
+  lastActualStability = nil,
+  lastActualTime = nil,
+  actualSeen = false,
+  fallbackLossStart = nil,
+  fallbackLossStability = nil,
+  expectedClosing = false,
+  emergencyClosing = false,
+  idleSince = nil,
+  lastSleepMessage = nil
+}
 
-  for i = 101, duration do
-    total = total + 2 ^ math.floor((i - 101) / 30)
-  end
+local sleepMessages = {
+  "BHC: Sleeping... dreaming of stable spacetime.",
+  "BHC: No seeds detected. Reality remains disappointingly intact.",
+  "BHC: Waiting for someone to manufacture another expensive mistake.",
+  "BHC: The Black Hole is currently on a union-mandated break.",
+  "BHC: Idle. EU-network destruction has been postponed.",
+  "BHC: Greg reviewed the setup and found it insufficiently complicated.",
+  "BHC: ST conserved. The power grid may relax temporarily.",
+  "BHC: Nothing to compress. Have you tried building a larger factory?",
+  "BHC: Standing by to turn several trillion EU into someone else's problem.",
+  "BHC: The event horizon is unavailable. Please try again later.",
+  "BHC: Waiting patiently. This is suspiciously unlike GregTech.",
+  "BHC: No active request. The Collapser is enjoying its retirement.",
+  "BHC: Sleeping lightly in case causality needs supervision.",
+  "BHC: Current task: avoiding an exciting containment failure.",
+  "BHC: Black Hole offline. Local physics operating within specifications.",
+  "BHC: Automation idle. Manual labor remains strongly discouraged.",
+  "BHC: The singularity has been asked to wait outside.",
+  "BHC: No recipe queued. Progress is temporarily affordable.",
+  "BHC: Waiting for more resources to disappear into science.",
+  "BHC: System idle. Please insert one irresponsibly dense object.",
+  "BHC: Reports of my instability have been greatly exaggerated.",
+  "BHC: Experience is the name operators give to voided recipes.",
+  "BHC: A Black Hole can resist everything except more ST.",
+  "BHC: Good judgment comes from experience. Experience comes from ignoring alarms.",
+  "BHC: Never argue with Greg. He will add six prerequisites and win by exhaustion.",
+  "BHC: There are three kinds of lies: lies, damned lies, and crafting-time estimates.",
+  "BHC: Common sense is not especially common in endgame automation.",
+  "BHC: Behind every great factory is a cable carrying too much amperage.",
+  "BHC: To err is human; to automate the error requires OpenComputers.",
+  "BHC: If at first you do not succeed, increase parallel and blame the power grid.",
+  "BHC: Reality is merely a suggestion until the Utility Hatch confirms it.",
+  "BHC: The machine is resting. The recipe tree is merely gathering strength."
+}
 
-  return {
-    amount - total,
-    total
-  }
+-- ========================== HELPERS ==========================
+
+local function numberText(value)
+value = tonumber(value) or 0
+
+return tostring(math.floor(value))
+:reverse()
+:gsub("(%d%d%d)", "%1,")
+:gsub(",(%-?)$", "%1")
+:reverse()
 end
 
--- Credits: Navatusein
-local function parse(number)
-  number = tonumber(number) or 0
-
-  return tostring(math.floor(number))
-    :reverse()
-    :gsub("(%d%d%d)", "%1,")
-    :gsub(",(%-?)$", "%1")
-    :reverse()
+local function cleanText(value)
+return tostring(value or "")
+:gsub("\194\167.", "")
+:gsub("[\r\n]+", " / ")
+:gsub("%s+", " ")
+:gsub("^%s+", "")
+:gsub("%s+$", "")
 end
 
-local function getSpacetimeAmount()
-  local tank = t.getFluidInTank(stockerSide, 1)
+local function formatElapsed(seconds)
+seconds = math.max(0, math.floor(tonumber(seconds) or 0))
 
-  if tank ~= nil and tank.amount ~= nil then
-    return tank.amount
-  end
+local hours = math.floor(seconds / 3600)
+local minutes = math.floor((seconds % 3600) / 60)
+local remainingSeconds = seconds % 60
 
+return string.format(
+  "%02d:%02d:%02d",
+  hours,
+  minutes,
+  remainingSeconds
+)
+end
+
+local function elapsedRuntime(now)
+if not state.seedInsertedAt then
   return 0
-end
-
-local function getEstimatedStability()
-  if blackHoleStart == nil or stabilityReferenceTime == nil then
-    return 100
-  end
-
-  if spacetimeEnabled then
-    return math.max(0, stabilityReference)
   end
 
   return math.max(
     0,
-    stabilityReference
-      - (computer.uptime() - stabilityReferenceTime)
+    (now or computer.uptime()) - state.seedInsertedAt
   )
-end
-
-local function getRecipeInformation()
-  local progress = bhc.getWorkProgress() or 0
-  local maximum = bhc.getWorkMaxProgress() or 0
-  local percent = 0
-
-  if maximum > 0 then
-    percent = progress / maximum * 100
   end
 
-  return progress, maximum, percent
-end
+  local function calculateSpacetime(duration, available)
+  local needed = 0
 
-local function printStatus()
-  local currentSpacetime = getSpacetimeAmount()
-
-  local progress, maximum, progressPercent =
-    getRecipeInformation()
-
-  local flowStatus
-
-  if not spacetimeEnabled then
-    flowStatus = "OFF"
-  elseif lastSpacetimeAmount == nil then
-    flowStatus = "ON - WAITING FOR SAMPLE"
-  elseif currentSpacetime < lastSpacetimeAmount then
-    flowStatus = string.format(
-      "FLOWING - %s L USED",
-      parse(lastSpacetimeAmount - currentSpacetime)
-    )
-  elseif currentSpacetime > lastSpacetimeAmount then
-    flowStatus = string.format(
-      "ON - STOCKER REFILLED %s L",
-      parse(currentSpacetime - lastSpacetimeAmount)
-    )
-  else
-    flowStatus = "ON - NO TANK DROP DETECTED"
-  end
-
-  print(string.format(
-    "BHC: Stability ~%.1f%% | Recipe %.1f%% (%s/%s) | Spacetime %s | Tank %s L",
-    getEstimatedStability(),
-    progressPercent,
-    parse(progress),
-    parse(maximum),
-    flowStatus,
-    parse(currentSpacetime)
-  ))
-
-  lastSpacetimeAmount = currentSpacetime
-end
-
-local function enableSpacetime()
-  local currentStability = getEstimatedStability()
-
-  stabilityReference = currentStability
-  stabilityReferenceTime = computer.uptime()
-  spacetimeEnabled = true
-  lastSpacetimeAmount = getSpacetimeAmount()
-
-  r.setOutput(transmitterSide, 15)
-
-  print("BHC: Spacetime transmitter enabled!")
-end
-
-local function disableSpacetime(showMessage)
-  local currentStability = getEstimatedStability()
-
-  stabilityReference = currentStability
-  stabilityReferenceTime = computer.uptime()
-  spacetimeEnabled = false
-  lastSpacetimeAmount = getSpacetimeAmount()
-
-  r.setOutput(transmitterSide, 0)
-
-  if showMessage then
-    print("BHC: Spacetime transmitter disabled!")
-  end
-end
-
-local function resetRuntimeState()
-  blackHoleStart = nil
-  stabilityReference = 100
-  stabilityReferenceTime = nil
-  spacetimeEnabled = false
-  lastSpacetimeAmount = nil
-end
-
-local function resetAfterUnexpectedClose()
-  disableSpacetime(false)
-  bhc.setWorkAllowed(true)
-  resetRuntimeState()
-  n = 0
-
-  print(
-    "BHC: Black Hole remained inactive for "
-      .. manualCloseConfirmSeconds
-      .. " seconds."
-  )
-
-  print(
-    "BHC: Treating this as a manual or unexpected shutdown."
-  )
-
-  print(
-    "BHC: Controller reset and ready for the next Black Hole."
-  )
-end
-
-local function confirmBlackHoleClosed()
-  if bhc.hasWork() then
-    return false
-  end
-
-  local confirmationStart = computer.uptime()
-  local nextMessage = confirmationStart
-
-  while computer.uptime() - confirmationStart
-      < manualCloseConfirmSeconds do
-
-    if bhc.hasWork() then
-      print(
-        "BHC: Work resumed. Ignoring temporary inactive state."
-      )
-
-      return false
+  for second = 101, duration do
+    needed = needed
+    + 2 ^ math.floor((second - 101) / 30)
     end
 
-    local now = computer.uptime()
-
-    if now >= nextMessage then
-      local elapsed = now - confirmationStart
-      local remaining = math.max(
-        0,
-        manualCloseConfirmSeconds - elapsed
-      )
-
-      print(string.format(
-        "BHC: No active work detected; confirming shutdown for %.1f more seconds...",
-        remaining
-      ))
-
-      nextMessage = nextMessage + 1
+    return available - needed, needed
     end
 
-    os.sleep(0.1)
-  end
-
-  return not bhc.hasWork()
-end
-
-local function blackHoleStillOpen()
-  if bhc.hasWork() then
-    return true
-  end
-
-  if confirmBlackHoleClosed() then
-    resetAfterUnexpectedClose()
-    return false
-  end
-
-  return true
-end
-
-local function statusSleep(duration)
-  duration = math.max(
-    tonumber(duration) or 0,
-    0
-  )
-
-  local finishTime = computer.uptime() + duration
-
-  while computer.uptime() < finishTime do
-    if not blackHoleStillOpen() then
-      return false
-    end
-
-    printStatus()
-
-    local remaining = finishTime - computer.uptime()
-
-    if remaining > 0 then
-      os.sleep(math.min(1, remaining))
-    end
-  end
-
-  return true
-end
-
-local function waitForBlackHoleStart()
-  while not bhc.hasWork() do
-    os.sleep(0.1)
-  end
-
-  blackHoleStart = computer.uptime()
-  stabilityReference = 100
-  stabilityReferenceTime = blackHoleStart
-  spacetimeEnabled = false
-  lastSpacetimeAmount = getSpacetimeAmount()
-
-  print("BHC: Black Hole started!")
-  printStatus()
-end
-
-local function waitForBlackHoleFinish()
-  local inactiveSince = nil
-
-  while true do
-    if bhc.hasWork() then
-      inactiveSince = nil
-      printStatus()
-      os.sleep(1)
-    else
-      if inactiveSince == nil then
-        inactiveSince = computer.uptime()
+    local function readStocker(stocker)
+    if not stocker or type(stocker.side) ~= "number" then
+      return 0, false
       end
 
-      if computer.uptime() - inactiveSince >= 1 then
-        return
-      end
-
-      os.sleep(0.1)
-    end
-  end
-end
-
-local function runBlackHoleCycle()
-  local availableSpacetime = getSpacetimeAmount()
-
-  local spacetimeCheck = calcSpacetime(
-    maxRuntime,
-    availableSpacetime
-  )
-
-  if spacetimeCheck[1] < 0 then
-    print(string.format(
-      "BHC: Missing %s L Spacetime!",
-      parse(-spacetimeCheck[1])
-    ))
-
-    return
-  end
-
-  print("")
-
-  print(string.format(
-    "BHC: Target %ss with %s L Spacetime!",
-    parse(maxRuntime),
-    parse(spacetimeCheck[2])
-  ))
-
-  print(string.format(
-    "BHC: Available Spacetime: %s L",
-    parse(availableSpacetime)
-  ))
-
-  print("BHC: Opening Black Hole!")
-
-  local seedMoved = t.transferItem(
-    interfaceSide,
-    busSide,
-    1,
-    1
-  )
-
-  if seedMoved == 0 then
-    print(
-      "BHC ERROR: Failed to transfer Black Hole Seed!"
-    )
-
-    return
-  end
-
-  waitForBlackHoleStart()
-
-  if maxRuntime > 100 then
-    -- With targetStability = 18, this waits about 82 seconds.
-    if not statusSleep(
-      math.max(100 - targetStability, 0)
-    ) then
-      return
-    end
-
-    if not blackHoleStillOpen() then
-      return
-    end
-
-    print(string.format(
-      "BHC: Injecting Spacetime at approximately %.1f%% stability!",
-      getEstimatedStability()
-    ))
-
-    enableSpacetime()
-    printStatus()
-
-    if not statusSleep(
-      math.max(maxRuntime - 100, 0)
-    ) then
-      return
-    end
-
-    if not blackHoleStillOpen() then
-      return
-    end
-
-    if voidProtection then
-      local maxProgress =
-        bhc.getWorkMaxProgress() or 0
-
-      local currentProgress =
-        bhc.getWorkProgress() or 0
-
-      local timeNeeded =
-        (maxProgress - currentProgress) / 20
-
-      local extraTime = math.max(
-        timeNeeded - targetStability + 1,
-        0
+      local ok, tank = pcall(
+        transposer.getFluidInTank,
+        stocker.side,
+        1
       )
 
-      if extraTime > 0 then
-        print(string.format(
-          "BHC: Void protection waiting %.1f additional seconds.",
-          extraTime
-        ))
-
-        if not statusSleep(extraTime) then
-          return
+      if not ok or not tank or tank.amount == nil then
+        return 0, false
         end
-      else
-        print(
-          "BHC: Current recipe does not require additional protection time."
-        )
-      end
-    end
 
-    disableSpacetime(true)
-    printStatus()
-  else
-    if not statusSleep(60) then
-      return
-    end
+        return tonumber(tank.amount) or 0, true
+        end
 
-    local maxProgress =
-      bhc.getWorkMaxProgress() or 0
+        local function getTankInformation()
+        local total = 0
+        local details = {}
+        local readable = 0
 
-    local currentProgress =
-      bhc.getWorkProgress() or 0
+        for _, stocker in ipairs(stockers) do
+          local amount, wasReadable = readStocker(stocker)
 
-    local timeNeeded = math.max(
-      1,
-      maxProgress / 20
-    )
+          total = total + amount
 
-    local timeRemaining =
-      40
-      - (
-        maxProgress
-        - currentProgress
-      ) / 20
+          if wasReadable then
+            readable = readable + 1
+            end
 
-    local alignmentWait =
-      (
-        math.floor(
-          timeRemaining / timeNeeded
-        ) * timeNeeded
-      ) - 1
+            details[#details + 1] = string.format(
+              "%s %s L",
+              stocker.name or "?",
+              numberText(amount)
+            )
+            end
 
-    if not statusSleep(
-      math.max(alignmentWait, 0)
-    ) then
-      return
-    end
-  end
+            return total, details, readable
+            end
 
-  if not blackHoleStillOpen() then
-    return
-  end
+            local function getTankAmount()
+            local total = getTankInformation()
+            return total
+            end
 
-  bhc.setWorkAllowed(false)
+            local function isHoleOpen()
+            return redstone.getInput(hatchSide) > 0
+            end
 
-  if useCollapser then
-    print("BHC: Closing Black Hole!")
+            local function isRecipeActive()
+            local ok, result = pcall(bhc.hasWork)
+            return ok and result == true
+            end
 
-    local collapserMoved = t.transferItem(
-      interfaceSide,
-      busSide,
-      1,
-      2
-    )
+            local function getTX()
+            local ok, value = pcall(
+              redstone.getOutput,
+              transmitterSide
+            )
 
-    if collapserMoved == 0 then
-      print(
-        "BHC ERROR: Failed to transfer Collapser!"
-      )
+            if ok then
+              return tonumber(value) or 0
+              end
 
-      bhc.setWorkAllowed(true)
-      return
-    end
-  else
-    local c = 0
+              return state.spacetimeOn and 15 or 0
+              end
 
-    print(
-      "BHC: Waiting for utility hatch shutdown."
-    )
+              local function enableController(showError)
+              local ok, result = pcall(
+                bhc.setWorkAllowed,
+                true
+              )
 
-    while r.getInput(hatchSide) > 0 do
-      os.sleep(20)
-      c = c + 1
+              if not ok and showError then
+                print(
+                  "BHC WARNING: Could not enable controller: "
+                  .. cleanText(result)
+                )
+                end
 
-      if c > 47 then
-        print(
-          "BHC WARNING: Utility hatch timeout reached."
-        )
+                return ok
+                end
 
-        break
-      end
-    end
-  end
+                local function resetState()
+                local previousSleepMessage = state.lastSleepMessage
 
-  waitForBlackHoleFinish()
+                state.seedInsertedAt = nil
+                state.holeStart = nil
+                state.stability = 100
+                state.stabilityTime = nil
+                state.spacetimeOn = false
+                state.spacetimeOnAt = nil
+                state.lastTank = nil
+                state.lastActualStability = nil
+                state.lastActualTime = nil
+                state.actualSeen = false
+                state.fallbackLossStart = nil
+                state.fallbackLossStability = nil
+                state.expectedClosing = false
+                state.emergencyClosing = false
+                state.idleSince = nil
+                state.lastSleepMessage = previousSleepMessage
+                end
 
-  bhc.setWorkAllowed(true)
+                -- ===================== STABILITY DATA =====================
 
-  print("BHC: Black Hole closed!")
+                local controllerAddress = bhc.address
+                local controllerMethods = nil
 
-  resetRuntimeState()
-  n = 0
-end
+                local function sortedKeys(tbl)
+                local keys = {}
 
--- Ensure the Spacetime transmitter is off when the script starts.
-r.setOutput(transmitterSide, 0)
-resetRuntimeState()
+                for key in pairs(tbl or {}) do
+                  keys[#keys + 1] = key
+                  end
 
--- ==========================
---          MAIN LOOP
--- ==========================
+                  table.sort(keys, function(a, b)
+                  return tostring(a) < tostring(b)
+                  end)
 
-while true do
-  -- Subnet has items and manual override is NOT set.
-  if r.getInput(receiverSide) > 0 then
+                  return keys
+                  end
 
-    -- There is a seed available in interface slot 1.
-    if t.getStackInSlot(
-      interfaceSide,
-      1
-    ) ~= nil then
+                  local function getControllerAddress()
+                  if controllerAddress then
+                    return controllerAddress
+                    end
 
-      -- There is a collapser available in interface slot 2,
-      -- unless collapsers are disabled in the config.
-      if t.getStackInSlot(
-        interfaceSide,
-        2
-      ) ~= nil or not useCollapser then
+                    local iterator = component.list("gt_machine", true)
 
-        runBlackHoleCycle()
-      else
-        print(
-          "BHC: No Collapsers Available!"
-        )
-      end
-    else
-      print(
-        "BHC: No Seeds Available!"
-      )
-    end
-  elseif n == 0 then
-    print(
-      "BHC: Sleeping..."
-    )
+                    if iterator then
+                      controllerAddress = iterator()
+                      end
 
-    n = 1
-  end
+                      return controllerAddress
+                      end
 
-  os.sleep(3)
-end
+                      local function getControllerMethods()
+                      if controllerMethods then
+                        return controllerMethods
+                        end
+
+                        local address = getControllerAddress()
+
+                        if not address then
+                          return nil
+                          end
+
+                          local ok, methods = pcall(component.methods, address)
+
+                          if ok and type(methods) == "table" then
+                            controllerMethods = methods
+                            return controllerMethods
+                            end
+
+                            return nil
+                            end
+
+                            local function isReaderMethod(name)
+                            return name:match("^get")
+                            or name:match("^is")
+                            or name:match("^has")
+                            or name:match("^can")
+                            end
+
+                            local function invokeReader(name)
+                            local address = getControllerAddress()
+
+                            if not address then
+                              return false, nil
+                              end
+
+                              local result = {
+                                pcall(component.invoke, address, name)
+                              }
+
+                              if not result[1] then
+                                return false, nil
+                                end
+
+                                table.remove(result, 1)
+                                return true, result
+                                end
+
+                                local function findStability(value, context, seen, depth)
+                                context = tostring(context or "")
+                                seen = seen or {}
+                                depth = depth or 0
+
+                                if type(value) == "number" then
+                                  if context:lower():find("stability", 1, true) then
+                                    return tonumber(value)
+                                    end
+
+                                    return nil
+                                    end
+
+                                    if type(value) == "string" then
+                                      local text = cleanText(value)
+                                      local lowerText = text:lower()
+                                      local lowerContext = context:lower()
+
+                                      if lowerText:find("stability", 1, true)
+                                        or lowerContext:find("stability", 1, true) then
+
+                                        local found =
+                                        text:match("([%d%.]+)%s*%%")
+                                        or text:match("[Ss]tability[^%d]*([%d%.]+)")
+
+                                        if tonumber(found) then
+                                          return tonumber(found)
+                                          end
+                                          end
+
+                                          return nil
+                                          end
+
+                                          if type(value) ~= "table"
+                                            or seen[value]
+                                            or depth >= 4 then
+
+                                            return nil
+                                            end
+
+                                            seen[value] = true
+
+                                            for _, key in ipairs(sortedKeys(value)) do
+                                              local found = findStability(
+                                                value[key],
+                                                context .. "[" .. tostring(key) .. "]",
+                                                                          seen,
+                                                                          depth + 1
+                                              )
+
+                                              if found ~= nil then
+                                                seen[value] = nil
+                                                return found
+                                                end
+                                                end
+
+                                                seen[value] = nil
+                                                return nil
+                                                end
+
+                                                local function readActualStability()
+                                                local methods = getControllerMethods()
+
+                                                if not methods then
+                                                  return nil
+                                                  end
+
+                                                  for _, name in ipairs(sortedKeys(methods)) do
+                                                    if isReaderMethod(name)
+                                                      and name:lower():find("stability", 1, true) then
+
+                                                      local ok, values = invokeReader(name)
+
+                                                      if ok then
+                                                        for _, value in ipairs(values) do
+                                                          if type(value) == "number" then
+                                                            return tonumber(value)
+                                                            end
+
+                                                            local found = findStability(value, name, {}, 0)
+
+                                                            if found ~= nil then
+                                                              return found
+                                                              end
+                                                              end
+                                                              end
+                                                              end
+                                                              end
+
+                                                              if methods.getSensorInformation then
+                                                                local ok, values = invokeReader("getSensorInformation")
+
+                                                                if ok then
+                                                                  for _, value in ipairs(values) do
+                                                                    local found = findStability(
+                                                                      value,
+                                                                      "getSensorInformation",
+                                                                      {},
+                                                                      0
+                                                                    )
+
+                                                                    if found ~= nil then
+                                                                      return found
+                                                                      end
+                                                                      end
+                                                                      end
+                                                                      end
+
+                                                                      return nil
+                                                                      end
+
+                                                                      local function getEstimatedStability(now, tankAmount, tx)
+                                                                      now = now or computer.uptime()
+                                                                      tankAmount = tankAmount or getTankAmount()
+                                                                      tx = tx or getTX()
+
+                                                                      if not state.holeStart or not state.stabilityTime then
+                                                                        return nil
+                                                                        end
+
+                                                                        if state.spacetimeOn then
+                                                                          if tx >= 15 and tankAmount > 0 then
+                                                                            state.fallbackLossStart = nil
+                                                                            state.fallbackLossStability = nil
+                                                                            return math.max(0, state.stability)
+                                                                            end
+
+                                                                            if not state.fallbackLossStart then
+                                                                              state.fallbackLossStart = now
+                                                                              state.fallbackLossStability = state.stability
+                                                                              end
+
+                                                                              return math.max(
+                                                                                0,
+                                                                                state.fallbackLossStability
+                                                                                - (now - state.fallbackLossStart)
+                                                                              )
+                                                                              end
+
+                                                                              return math.max(
+                                                                                0,
+                                                                                state.stability - (now - state.stabilityTime)
+                                                                              )
+                                                                              end
+
+                                                                              local function getRecipeData()
+                                                                              local progress = bhc.getWorkProgress() or 0
+                                                                              local maximum = bhc.getWorkMaxProgress() or 0
+                                                                              local percent = 0
+
+                                                                              if maximum > 0 then
+                                                                                percent = progress / maximum * 100
+                                                                                end
+
+                                                                                return progress, maximum, percent
+                                                                                end
+
+                                                                                local function sampleStatus()
+                                                                                local now = computer.uptime()
+                                                                                local tank = getTankAmount()
+                                                                                local tx = getTX()
+
+                                                                                local tankDelta = nil
+
+                                                                                if state.lastTank ~= nil then
+                                                                                  tankDelta = state.lastTank - tank
+                                                                                  end
+
+                                                                                  state.lastTank = tank
+
+                                                                                  local actual = readActualStability()
+                                                                                  local stability
+                                                                                  local stabilityType
+
+                                                                                  if actual ~= nil then
+                                                                                    state.actualSeen = true
+                                                                                    state.lastActualStability = actual
+                                                                                    state.lastActualTime = now
+                                                                                    state.stability = actual
+                                                                                    state.stabilityTime = now
+                                                                                    state.fallbackLossStart = nil
+                                                                                    state.fallbackLossStability = nil
+
+                                                                                    stability = actual
+                                                                                    stabilityType = "ACT"
+                                                                                    else
+                                                                                      stability = getEstimatedStability(now, tank, tx)
+                                                                                      stabilityType = "EST"
+                                                                                      end
+
+                                                                                      local progress, maximum, percent = getRecipeData()
+
+                                                                                      return {
+                                                                                        now = now,
+                                                                                        elapsed = elapsedRuntime(now),
+                                                                                        holeOpen = isHoleOpen(),
+                                                                                        recipeActive = isRecipeActive(),
+                                                                                        progress = progress,
+                                                                                        maximum = maximum,
+                                                                                        recipePercent = percent,
+                                                                                        tank = tank,
+                                                                                        tankDelta = tankDelta,
+                                                                                        tx = tx,
+                                                                                        stability = stability,
+                                                                                        stabilityType = stabilityType
+                                                                                      }
+                                                                                      end
+
+                                                                                      local function flowText(sample)
+                                                                                      if not state.spacetimeOn then
+                                                                                        return "OFF"
+                                                                                        end
+
+                                                                                        if sample.tankDelta == nil then
+                                                                                          return "ON - WAITING"
+                                                                                          end
+
+                                                                                          if sample.tankDelta > 0 then
+                                                                                            return "FLOW "
+                                                                                            .. numberText(sample.tankDelta)
+                                                                                            .. " L"
+                                                                                            end
+
+                                                                                            if sample.tankDelta < 0 then
+                                                                                              return "REFILL +"
+                                                                                              .. numberText(-sample.tankDelta)
+                                                                                              .. " L"
+                                                                                              end
+
+                                                                                              return "ON - NO TANK CHANGE"
+                                                                                              end
+
+                                                                                              local function printStatus(sample)
+                                                                                              sample = sample or sampleStatus()
+
+                                                                                              local stabilityText = "UNKNOWN"
+
+                                                                                              if sample.stability ~= nil then
+                                                                                                stabilityText = string.format(
+                                                                                                  "%.1f%% %s",
+                                                                                                  sample.stability,
+                                                                                                  sample.stabilityType
+                                                                                                )
+                                                                                                end
+
+                                                                                                print(string.format(
+                                                                                                  "BHC: T %s | Hole %s | STAB %s | Recipe %s %.1f%% (%s/%s) | ST %s | TX %d | Tank %s L",
+                                                                                                                    formatElapsed(sample.elapsed),
+                                                                                                                      sample.holeOpen and "OPEN" or "CLOSED",
+                                                                                                                    stabilityText,
+                                                                                                                    sample.recipeActive and "ACTIVE" or "IDLE",
+                                                                                                                    sample.recipePercent,
+                                                                                                                    numberText(sample.progress),
+                                                                                                                    numberText(sample.maximum),
+                                                                                                                    flowText(sample),
+                                                                                                                    sample.tx,
+                                                                                                                    numberText(sample.tank)
+                                                                                                ))
+                                                                                                end
+
+                                                                                                local function enableSpacetime()
+                                                                                                local now = computer.uptime()
+                                                                                                local estimated = getEstimatedStability(
+                                                                                                  now,
+                                                                                                  getTankAmount(),
+                                                                                                                                        getTX()
+                                                                                                )
+
+                                                                                                if state.lastActualStability
+                                                                                                  and state.lastActualTime
+                                                                                                  and now - state.lastActualTime <= 2 then
+
+                                                                                                  estimated = state.lastActualStability
+                                                                                                  end
+
+                                                                                                  state.stability = estimated or targetStability
+                                                                                                  state.stabilityTime = now
+                                                                                                  state.spacetimeOn = true
+                                                                                                  state.spacetimeOnAt = now
+                                                                                                  state.lastTank = getTankAmount()
+                                                                                                  state.fallbackLossStart = nil
+                                                                                                  state.fallbackLossStability = nil
+
+                                                                                                  redstone.setOutput(transmitterSide, 15)
+                                                                                                  print("BHC: ST transmitter enabled!")
+                                                                                                  end
+
+                                                                                                  local function disableSpacetime(showMessage)
+                                                                                                  local now = computer.uptime()
+                                                                                                  local estimated = getEstimatedStability(
+                                                                                                    now,
+                                                                                                    getTankAmount(),
+                                                                                                                                          getTX()
+                                                                                                  )
+
+                                                                                                  if state.lastActualStability
+                                                                                                    and state.lastActualTime
+                                                                                                    and now - state.lastActualTime <= 2 then
+
+                                                                                                    estimated = state.lastActualStability
+                                                                                                    end
+
+                                                                                                    state.stability = estimated or state.stability
+                                                                                                    state.stabilityTime = now
+                                                                                                    state.spacetimeOn = false
+                                                                                                    state.spacetimeOnAt = nil
+                                                                                                    state.lastTank = getTankAmount()
+                                                                                                    state.fallbackLossStart = nil
+                                                                                                    state.fallbackLossStability = nil
+
+                                                                                                    redstone.setOutput(transmitterSide, 0)
+
+                                                                                                    if showMessage then
+                                                                                                      print("BHC: ST transmitter disabled!")
+                                                                                                      end
+                                                                                                      end
+
+                                                                                                      -- ==================== CLOSURE HANDLING ====================
+
+                                                                                                      local function confirmHoleClosed()
+                                                                                                      if isHoleOpen() then
+                                                                                                        return false
+                                                                                                        end
+
+                                                                                                        local started = computer.uptime()
+
+                                                                                                        while computer.uptime() - started
+                                                                                                          < manualCloseConfirmSeconds do
+
+                                                                                                          if isHoleOpen() then
+                                                                                                            print(
+                                                                                                              "BHC: Hatch signal returned; ignoring temporary closed reading."
+                                                                                                            )
+
+                                                                                                            return false
+                                                                                                            end
+
+                                                                                                            os.sleep(0.1)
+                                                                                                            end
+
+                                                                                                            return not isHoleOpen()
+                                                                                                            end
+
+                                                                                                            local function unexpectedClosureReset()
+                                                                                                            disableSpacetime(false)
+                                                                                                            enableController(false)
+                                                                                                            resetState()
+
+                                                                                                            print(
+                                                                                                              "BHC: Utility hatch remained closed for "
+                                                                                                              .. manualCloseConfirmSeconds
+                                                                                                              .. " seconds. Controller reset."
+                                                                                                            )
+                                                                                                            end
+
+                                                                                                            local function holeStillOpen()
+                                                                                                            if isHoleOpen() then
+                                                                                                              return true
+                                                                                                              end
+
+                                                                                                              if state.expectedClosing then
+                                                                                                                return false
+                                                                                                                end
+
+                                                                                                                if confirmHoleClosed() then
+                                                                                                                  unexpectedClosureReset()
+                                                                                                                  return false
+                                                                                                                  end
+
+                                                                                                                  return true
+                                                                                                                  end
+
+                                                                                                                  local function insertCollapserWithRetry()
+                                                                                                                  local nextWarning = 0
+
+                                                                                                                  enableController(true)
+
+                                                                                                                  while isHoleOpen() do
+                                                                                                                    enableController(false)
+
+                                                                                                                    local moved = transposer.transferItem(
+                                                                                                                      interfaceSide,
+                                                                                                                      busSide,
+                                                                                                                      1,
+                                                                                                                      2
+                                                                                                                    )
+
+                                                                                                                    if moved and moved > 0 then
+                                                                                                                      print(
+                                                                                                                        "BHC: Collapser inserted; controller remains enabled."
+                                                                                                                      )
+
+                                                                                                                      return true
+                                                                                                                      end
+
+                                                                                                                      if computer.uptime() >= nextWarning then
+                                                                                                                        print(
+                                                                                                                          "BHC CRITICAL: Could not insert Collapser; retrying every second!"
+                                                                                                                        )
+
+                                                                                                                        nextWarning = computer.uptime() + 1
+                                                                                                                        end
+
+                                                                                                                        os.sleep(1)
+                                                                                                                        end
+
+                                                                                                                        return false
+                                                                                                                        end
+
+                                                                                                                        local function waitForHoleToClose()
+                                                                                                                        local nextPrint = computer.uptime()
+
+                                                                                                                        while isHoleOpen() do
+                                                                                                                          enableController(false)
+
+                                                                                                                          if computer.uptime() >= nextPrint then
+                                                                                                                            if debugShowStatusEverySecond then
+                                                                                                                              printStatus(sampleStatus())
+                                                                                                                              end
+
+                                                                                                                              nextPrint = nextPrint + 1
+                                                                                                                              end
+
+                                                                                                                              os.sleep(0.1)
+                                                                                                                              end
+                                                                                                                              end
+
+                                                                                                                              local function normalClose(reason)
+                                                                                                                              if state.expectedClosing then
+                                                                                                                                return
+                                                                                                                                end
+
+                                                                                                                                state.expectedClosing = true
+
+                                                                                                                                if reason then
+                                                                                                                                  print("")
+                                                                                                                                  print("BHC: " .. reason)
+                                                                                                                                  end
+
+                                                                                                                                  enableController(true)
+
+                                                                                                                                  if useCollapser then
+                                                                                                                                    print("BHC: Closing Black Hole!")
+                                                                                                                                    insertCollapserWithRetry()
+                                                                                                                                    else
+                                                                                                                                      print(
+                                                                                                                                        "BHC: Waiting for the 15-minute utility-hatch automatic shutdown."
+                                                                                                                                      )
+                                                                                                                                      end
+
+                                                                                                                                      waitForHoleToClose()
+                                                                                                                                      disableSpacetime(false)
+                                                                                                                                      enableController(false)
+
+                                                                                                                                      print(
+                                                                                                                                        "BHC: Utility hatch confirms Black Hole is closed!"
+                                                                                                                                      )
+
+                                                                                                                                      resetState()
+                                                                                                                                      end
+
+                                                                                                                                      local function emergencyClose(sample, reason)
+                                                                                                                                      if state.emergencyClosing then
+                                                                                                                                        return false
+                                                                                                                                        end
+
+                                                                                                                                        state.emergencyClosing = true
+                                                                                                                                        state.expectedClosing = true
+
+                                                                                                                                        print("")
+                                                                                                                                        print("BHC EMERGENCY: " .. reason)
+
+                                                                                                                                        if sample and sample.stability ~= nil then
+                                                                                                                                          print(string.format(
+                                                                                                                                            "BHC EMERGENCY: STAB %.1f%% (%s).",
+                                                                                                                                                              sample.stability,
+                                                                                                                                                              sample.stabilityType
+                                                                                                                                          ))
+                                                                                                                                          end
+
+                                                                                                                                          print(
+                                                                                                                                            "BHC EMERGENCY: Inserting a Collapser while keeping the controller enabled!"
+                                                                                                                                          )
+
+                                                                                                                                          enableController(true)
+
+                                                                                                                                          if useCollapser then
+                                                                                                                                            insertCollapserWithRetry()
+                                                                                                                                            else
+                                                                                                                                              print(
+                                                                                                                                                "BHC CRITICAL: Emergency closure requires useCollapser = true."
+                                                                                                                                              )
+                                                                                                                                              end
+
+                                                                                                                                              waitForHoleToClose()
+                                                                                                                                              disableSpacetime(false)
+                                                                                                                                              enableController(false)
+
+                                                                                                                                              print(
+                                                                                                                                                "BHC: Emergency closure complete; Black Hole is closed."
+                                                                                                                                              )
+
+                                                                                                                                              resetState()
+                                                                                                                                              return false
+                                                                                                                                              end
+
+                                                                                                                                              local function checkEmergency(sample)
+                                                                                                                                              if state.expectedClosing or state.emergencyClosing then
+                                                                                                                                                return true
+                                                                                                                                                end
+
+                                                                                                                                                if sample.stability ~= nil
+                                                                                                                                                  and sample.stability <= emergencyCloseStability then
+
+                                                                                                                                                  local reason
+
+                                                                                                                                                  if sample.stabilityType == "ACT" then
+                                                                                                                                                    reason = string.format(
+                                                                                                                                                      "Actual STAB reached the %.1f%% safety threshold.",
+                                                                                                                                                      emergencyCloseStability
+                                                                                                                                                    )
+                                                                                                                                                    else
+                                                                                                                                                      reason = string.format(
+                                                                                                                                                        "Estimated STAB reached the %.1f%% safety threshold after TX loss or empty ST stockers.",
+                                                                                                                                                        emergencyCloseStability
+                                                                                                                                                      )
+                                                                                                                                                      end
+
+                                                                                                                                                      emergencyClose(sample, reason)
+                                                                                                                                                      return false
+                                                                                                                                                      end
+
+                                                                                                                                                      return true
+                                                                                                                                                      end
+
+                                                                                                                                                      local function checkIdleClose(sample)
+                                                                                                                                                      if not closeWhenIdle
+                                                                                                                                                        or not useCollapser
+                                                                                                                                                        or state.expectedClosing
+                                                                                                                                                        or state.emergencyClosing then
+
+                                                                                                                                                        return true
+                                                                                                                                                        end
+
+                                                                                                                                                        if sample.recipeActive then
+                                                                                                                                                          state.idleSince = nil
+                                                                                                                                                          return true
+                                                                                                                                                          end
+
+                                                                                                                                                          if not state.idleSince then
+                                                                                                                                                            state.idleSince = sample.now
+                                                                                                                                                            end
+
+                                                                                                                                                            local configuredSeconds = math.max(
+                                                                                                                                                              0,
+                                                                                                                                                              tonumber(idleCloseSeconds) or 0
+                                                                                                                                                            )
+
+                                                                                                                                                            local minimumRuntime = math.max(
+                                                                                                                                                              0,
+                                                                                                                                                              tonumber(minimumRuntimeBeforeIdleClose) or 0
+                                                                                                                                                            )
+
+                                                                                                                                                            local idleFor = sample.now - state.idleSince
+                                                                                                                                                            local runtimeSinceSeed = elapsedRuntime(sample.now)
+
+                                                                                                                                                            if idleFor >= configuredSeconds
+                                                                                                                                                              and runtimeSinceSeed >= minimumRuntime then
+
+                                                                                                                                                              normalClose(string.format(
+                                                                                                                                                                "No recipe has been active for %.1f seconds and the %.1f-second minimum runtime has elapsed; closing early.",
+                                                                                                                                                                idleFor,
+                                                                                                                                                                minimumRuntime
+                                                                                                                                                              ))
+
+                                                                                                                                                              return false
+                                                                                                                                                              end
+
+                                                                                                                                                              return true
+                                                                                                                                                              end
+
+                                                                                                                                                              local function statusSleep(seconds)
+                                                                                                                                                              local finish = computer.uptime()
+                                                                                                                                                              + math.max(tonumber(seconds) or 0, 0)
+
+                                                                                                                                                              while computer.uptime() < finish do
+                                                                                                                                                                if not holeStillOpen() then
+                                                                                                                                                                  return false
+                                                                                                                                                                  end
+
+                                                                                                                                                                  local sample = sampleStatus()
+
+                                                                                                                                                                  if debugShowStatusEverySecond then
+                                                                                                                                                                    printStatus(sample)
+                                                                                                                                                                    end
+
+                                                                                                                                                                    if not checkEmergency(sample) then
+                                                                                                                                                                      return false
+                                                                                                                                                                      end
+
+                                                                                                                                                                      if not checkIdleClose(sample) then
+                                                                                                                                                                        return false
+                                                                                                                                                                        end
+
+                                                                                                                                                                        local remaining = finish - computer.uptime()
+
+                                                                                                                                                                        if remaining > 0 then
+                                                                                                                                                                          os.sleep(math.min(1, remaining))
+                                                                                                                                                                          end
+                                                                                                                                                                          end
+
+                                                                                                                                                                          return true
+                                                                                                                                                                          end
+
+                                                                                                                                                                          -- ==================== BLACK HOLE CYCLE ====================
+
+                                                                                                                                                                          local function waitForHoleOpen()
+                                                                                                                                                                          local nextPrint = computer.uptime()
+
+                                                                                                                                                                          while not isHoleOpen() do
+                                                                                                                                                                            local now = computer.uptime()
+
+                                                                                                                                                                            if now >= nextPrint then
+                                                                                                                                                                              print(string.format(
+                                                                                                                                                                                "BHC: T %s | Waiting for Utility Hatch open signal...",
+                                                                                                                                                                                formatElapsed(elapsedRuntime(now))
+                                                                                                                                                                              ))
+
+                                                                                                                                                                              nextPrint = nextPrint + 1
+                                                                                                                                                                              end
+
+                                                                                                                                                                              os.sleep(0.1)
+                                                                                                                                                                              end
+
+                                                                                                                                                                              state.holeStart = computer.uptime()
+                                                                                                                                                                              state.stability = 100
+                                                                                                                                                                              state.stabilityTime = state.holeStart
+                                                                                                                                                                              state.spacetimeOn = false
+                                                                                                                                                                              state.spacetimeOnAt = nil
+                                                                                                                                                                              state.lastTank = getTankAmount()
+                                                                                                                                                                              state.lastActualStability = nil
+                                                                                                                                                                              state.lastActualTime = nil
+                                                                                                                                                                              state.actualSeen = false
+                                                                                                                                                                              state.fallbackLossStart = nil
+                                                                                                                                                                              state.fallbackLossStability = nil
+                                                                                                                                                                              state.expectedClosing = false
+                                                                                                                                                                              state.emergencyClosing = false
+                                                                                                                                                                              state.idleSince = nil
+
+                                                                                                                                                                              print(
+                                                                                                                                                                                "BHC: Utility hatch confirms Black Hole is open!"
+                                                                                                                                                                              )
+
+                                                                                                                                                                              if debugShowStatusEverySecond then
+                                                                                                                                                                                printStatus(sampleStatus())
+                                                                                                                                                                                end
+                                                                                                                                                                                end
+
+                                                                                                                                                                                local function runCycle()
+                                                                                                                                                                                local available, tankDetails, readableStockers =
+                                                                                                                                                                                getTankInformation()
+
+                                                                                                                                                                                local remaining, needed = calculateSpacetime(
+                                                                                                                                                                                  maxRuntime,
+                                                                                                                                                                                  available
+                                                                                                                                                                                )
+
+                                                                                                                                                                                print("")
+                                                                                                                                                                                print(
+                                                                                                                                                                                  "BHC: ST stockers: "
+                                                                                                                                                                                  .. table.concat(tankDetails, " | ")
+                                                                                                                                                                                )
+
+                                                                                                                                                                                if readableStockers == 0 then
+                                                                                                                                                                                  print(
+                                                                                                                                                                                    "BHC ERROR: No configured ST stocker could be read by the transposer."
+                                                                                                                                                                                  )
+
+                                                                                                                                                                                  return
+                                                                                                                                                                                  end
+
+                                                                                                                                                                                  if remaining < 0 then
+                                                                                                                                                                                    print(
+                                                                                                                                                                                      "BHC: Missing "
+                                                                                                                                                                                      .. numberText(-remaining)
+                                                                                                                                                                                      .. " L ST!"
+                                                                                                                                                                                    )
+
+                                                                                                                                                                                    print(
+                                                                                                                                                                                      "BHC: Required "
+                                                                                                                                                                                      .. numberText(needed)
+                                                                                                                                                                                      .. " L | Available "
+                                                                                                                                                                                      .. numberText(available)
+                                                                                                                                                                                      .. " L"
+                                                                                                                                                                                    )
+
+                                                                                                                                                                                    return
+                                                                                                                                                                                    end
+
+                                                                                                                                                                                    print(
+                                                                                                                                                                                      "BHC: Target "
+                                                                                                                                                                                      .. numberText(maxRuntime)
+                                                                                                                                                                                      .. "s with "
+                                                                                                                                                                                      .. numberText(needed)
+                                                                                                                                                                                      .. " L ST!"
+                                                                                                                                                                                    )
+
+                                                                                                                                                                                    print(
+                                                                                                                                                                                      "BHC: Available ST: "
+                                                                                                                                                                                      .. numberText(available)
+                                                                                                                                                                                      .. " L"
+                                                                                                                                                                                    )
+
+                                                                                                                                                                                    print(string.format(
+                                                                                                                                                                                      "BHC: Emergency close threshold: %.1f%% STAB.",
+                                                                                                                                                                                      emergencyCloseStability
+                                                                                                                                                                                    ))
+
+                                                                                                                                                                                    if closeWhenIdle and useCollapser then
+                                                                                                                                                                                      print(string.format(
+                                                                                                                                                                                        "BHC: Idle close after %.1fs idle, never before %.1fs after seed insertion.",
+                                                                                                                                                                                        math.max(0, tonumber(idleCloseSeconds) or 0),
+                                                                                                                                                                                                          math.max(0, tonumber(minimumRuntimeBeforeIdleClose) or 0)
+                                                                                                                                                                                      ))
+                                                                                                                                                                                      end
+
+                                                                                                                                                                                      print("BHC: Opening Black Hole!")
+                                                                                                                                                                                      enableController(true)
+
+                                                                                                                                                                                      local moved = transposer.transferItem(
+                                                                                                                                                                                        interfaceSide,
+                                                                                                                                                                                        busSide,
+                                                                                                                                                                                        1,
+                                                                                                                                                                                        1
+                                                                                                                                                                                      )
+
+                                                                                                                                                                                      if not moved or moved == 0 then
+                                                                                                                                                                                        print(
+                                                                                                                                                                                          "BHC ERROR: Failed to transfer Black Hole Seed!"
+                                                                                                                                                                                        )
+
+                                                                                                                                                                                        return
+                                                                                                                                                                                        end
+
+                                                                                                                                                                                        state.seedInsertedAt = computer.uptime()
+                                                                                                                                                                                        waitForHoleOpen()
+
+                                                                                                                                                                                        if maxRuntime > 100 then
+                                                                                                                                                                                          if not statusSleep(
+                                                                                                                                                                                            math.max(100 - targetStability, 0)
+                                                                                                                                                                                          ) then
+                                                                                                                                                                                          return
+                                                                                                                                                                                          end
+
+                                                                                                                                                                                          if not holeStillOpen() then
+                                                                                                                                                                                            return
+                                                                                                                                                                                            end
+
+                                                                                                                                                                                            local beforeInjection = sampleStatus()
+
+                                                                                                                                                                                            if not checkEmergency(beforeInjection) then
+                                                                                                                                                                                              return
+                                                                                                                                                                                              end
+
+                                                                                                                                                                                              print(string.format(
+                                                                                                                                                                                                "BHC: Injecting ST at approximately %.1f%% STAB!",
+                                                                                                                                                                                                beforeInjection.stability or targetStability
+                                                                                                                                                                                              ))
+
+                                                                                                                                                                                              enableSpacetime()
+
+                                                                                                                                                                                              local afterInjection = sampleStatus()
+
+                                                                                                                                                                                              if debugShowStatusEverySecond then
+                                                                                                                                                                                                printStatus(afterInjection)
+                                                                                                                                                                                                end
+
+                                                                                                                                                                                                if not checkEmergency(afterInjection) then
+                                                                                                                                                                                                  return
+                                                                                                                                                                                                  end
+
+                                                                                                                                                                                                  if not checkIdleClose(afterInjection) then
+                                                                                                                                                                                                    return
+                                                                                                                                                                                                    end
+
+                                                                                                                                                                                                    if not statusSleep(
+                                                                                                                                                                                                      math.max(maxRuntime - 100, 0)
+                                                                                                                                                                                                    ) then
+                                                                                                                                                                                                    return
+                                                                                                                                                                                                    end
+
+                                                                                                                                                                                                    if not holeStillOpen() then
+                                                                                                                                                                                                      return
+                                                                                                                                                                                                      end
+
+                                                                                                                                                                                                      local shutdownSample = sampleStatus()
+
+                                                                                                                                                                                                      if not checkEmergency(shutdownSample) then
+                                                                                                                                                                                                        return
+                                                                                                                                                                                                        end
+
+                                                                                                                                                                                                        if voidProtection and isRecipeActive() then
+                                                                                                                                                                                                          local maxProgress = bhc.getWorkMaxProgress() or 0
+                                                                                                                                                                                                          local progress = bhc.getWorkProgress() or 0
+                                                                                                                                                                                                          local timeNeeded = (maxProgress - progress) / 20
+                                                                                                                                                                                                          local stability = shutdownSample.stability or targetStability
+                                                                                                                                                                                                          local extra = math.max(timeNeeded - stability + 1, 0)
+
+                                                                                                                                                                                                          if extra > 0 then
+                                                                                                                                                                                                            print(string.format(
+                                                                                                                                                                                                              "BHC: Void protection waiting %.1f additional seconds.",
+                                                                                                                                                                                                              extra
+                                                                                                                                                                                                            ))
+
+                                                                                                                                                                                                            if not statusSleep(extra) then
+                                                                                                                                                                                                              return
+                                                                                                                                                                                                              end
+                                                                                                                                                                                                              else
+                                                                                                                                                                                                                print(
+                                                                                                                                                                                                                  "BHC: Current recipe does not require additional protection time."
+                                                                                                                                                                                                                )
+                                                                                                                                                                                                                end
+                                                                                                                                                                                                                elseif voidProtection then
+                                                                                                                                                                                                                  print(
+                                                                                                                                                                                                                    "BHC: No recipe active at shutdown; no protection wait needed."
+                                                                                                                                                                                                                  )
+                                                                                                                                                                                                                  end
+                                                                                                                                                                                                                  else
+                                                                                                                                                                                                                    if not statusSleep(60) then
+                                                                                                                                                                                                                      return
+                                                                                                                                                                                                                      end
+
+                                                                                                                                                                                                                      if isRecipeActive() then
+                                                                                                                                                                                                                        local maxProgress = bhc.getWorkMaxProgress() or 0
+                                                                                                                                                                                                                        local progress = bhc.getWorkProgress() or 0
+                                                                                                                                                                                                                        local recipeSeconds = math.max(1, maxProgress / 20)
+                                                                                                                                                                                                                        local timeRemaining = 40 - (maxProgress - progress) / 20
+                                                                                                                                                                                                                        local waitTime = math.floor(
+                                                                                                                                                                                                                          timeRemaining / recipeSeconds
+                                                                                                                                                                                                                        ) * recipeSeconds - 1
+
+                                                                                                                                                                                                                        if not statusSleep(math.max(waitTime, 0)) then
+                                                                                                                                                                                                                          return
+                                                                                                                                                                                                                          end
+                                                                                                                                                                                                                          end
+                                                                                                                                                                                                                          end
+
+                                                                                                                                                                                                                          if not holeStillOpen() then
+                                                                                                                                                                                                                            return
+                                                                                                                                                                                                                            end
+
+                                                                                                                                                                                                                            normalClose()
+                                                                                                                                                                                                                            end
+
+                                                                                                                                                                                                                            -- ======================= SLEEP MODE =======================
+
+                                                                                                                                                                                                                            local function printSleepMessage()
+                                                                                                                                                                                                                            if #sleepMessages == 0 then
+                                                                                                                                                                                                                              print("BHC: Sleeping...")
+                                                                                                                                                                                                                              return
+                                                                                                                                                                                                                              end
+
+                                                                                                                                                                                                                              local index = math.random(1, #sleepMessages)
+
+                                                                                                                                                                                                                              while #sleepMessages > 1
+                                                                                                                                                                                                                                and index == state.lastSleepMessage do
+
+                                                                                                                                                                                                                                index = math.random(1, #sleepMessages)
+                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                state.lastSleepMessage = index
+                                                                                                                                                                                                                                print(sleepMessages[index])
+                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                local function sleepUntilRequested()
+                                                                                                                                                                                                                                printSleepMessage()
+
+                                                                                                                                                                                                                                local nextMessage = computer.uptime()
+                                                                                                                                                                                                                                + sleepMessageInterval
+
+                                                                                                                                                                                                                                while redstone.getInput(receiverSide) <= 0 do
+                                                                                                                                                                                                                                  if computer.uptime() >= nextMessage then
+                                                                                                                                                                                                                                    printSleepMessage()
+                                                                                                                                                                                                                                    nextMessage = computer.uptime()
+                                                                                                                                                                                                                                    + sleepMessageInterval
+                                                                                                                                                                                                                                    end
+
+                                                                                                                                                                                                                                    os.sleep(1)
+                                                                                                                                                                                                                                    end
+                                                                                                                                                                                                                                    end
+
+                                                                                                                                                                                                                                    -- ======================== STARTUP =========================
+
+                                                                                                                                                                                                                                    math.randomseed(math.floor(computer.uptime() * 1000))
+                                                                                                                                                                                                                                    math.random()
+                                                                                                                                                                                                                                    math.random()
+                                                                                                                                                                                                                                    math.random()
+
+                                                                                                                                                                                                                                    redstone.setOutput(transmitterSide, 0)
+                                                                                                                                                                                                                                    enableController(true)
+                                                                                                                                                                                                                                    resetState()
+
+                                                                                                                                                                                                                                    if closeWhenIdle then
+                                                                                                                                                                                                                                      if useCollapser then
+                                                                                                                                                                                                                                        print(string.format(
+                                                                                                                                                                                                                                          "BHC: Early idle close enabled after %.1f seconds without a recipe, but never before %.1f seconds after seed insertion.",
+                                                                                                                                                                                                                                          math.max(0, tonumber(idleCloseSeconds) or 0),
+                                                                                                                                                                                                                                                            math.max(0, tonumber(minimumRuntimeBeforeIdleClose) or 0)
+                                                                                                                                                                                                                                        ))
+                                                                                                                                                                                                                                        else
+                                                                                                                                                                                                                                          print(
+                                                                                                                                                                                                                                            "BHC WARNING: Idle close is enabled, but useCollapser is false."
+                                                                                                                                                                                                                                          )
+                                                                                                                                                                                                                                          end
+                                                                                                                                                                                                                                          end
+
+                                                                                                                                                                                                                                          while true do
+                                                                                                                                                                                                                                            if redstone.getInput(receiverSide) > 0 then
+                                                                                                                                                                                                                                              if transposer.getStackInSlot(interfaceSide, 1) == nil then
+                                                                                                                                                                                                                                                print("BHC: No Seeds Available!")
+                                                                                                                                                                                                                                                elseif useCollapser
+                                                                                                                                                                                                                                                  and transposer.getStackInSlot(interfaceSide, 2) == nil then
+                                                                                                                                                                                                                                                  print("BHC: No Collapsers Available!")
+                                                                                                                                                                                                                                                  else
+                                                                                                                                                                                                                                                    runCycle()
+                                                                                                                                                                                                                                                    end
+
+                                                                                                                                                                                                                                                    os.sleep(3)
+                                                                                                                                                                                                                                                    else
+                                                                                                                                                                                                                                                      sleepUntilRequested()
+                                                                                                                                                                                                                                                      end
+                                                                                                                                                                                                                                                      end
