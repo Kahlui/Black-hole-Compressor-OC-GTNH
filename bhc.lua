@@ -268,1188 +268,1239 @@ if not unicodeOK then
                   return available - needed, needed
                   end
 
-                  local function readStocker(stocker)
-                  if not stocker or type(stocker.side) ~= "number" then
-                    return 0, false
+                  -- Void protection must always have at least enough ST to extend the Black
+                  -- Hole past the free 100-second window. When a recipe is active, project the
+                  -- extra runtime needed to finish it and show that live requirement in the UI.
+                  local function getProjectedRuntime(sample)
+                  local projectedRuntime = maxRuntime
+
+                  if voidProtection then
+                    projectedRuntime = math.max(projectedRuntime, 101)
                     end
 
-                    local ok, tank = pcall(
-                      transposer.getFluidInTank,
-                      stocker.side,
-                      1
-                    )
+                    if voidProtection and sample and sample.recipeActive then
+                      local remainingRecipeSeconds = math.max(
+                        0,
+                        ((sample.maximum or 0) - (sample.progress or 0)) / 20
+                      )
 
-                    if not ok or not tank or tank.amount == nil then
-                      return 0, false
+                      local availableStability = sample.stability or targetStability
+                      local protectionSeconds = math.max(
+                        remainingRecipeSeconds - availableStability + 1,
+                        0
+                      )
+
+                      projectedRuntime = math.max(
+                        projectedRuntime,
+                        100 + math.ceil(protectionSeconds)
+                      )
                       end
 
-                      return tonumber(tank.amount) or 0, true
+                      return math.max(0, math.ceil(projectedRuntime))
                       end
 
-                      local function getTankInformation()
-                      local total = 0
-                      local details = {}
-                      local readable = 0
+                      local function getSpacetimeRequirement(available, sample)
+                      local projectedRuntime = getProjectedRuntime(sample)
+                      local remaining, needed = calculateSpacetime(
+                        projectedRuntime,
+                        available
+                      )
 
-                      for _, stocker in ipairs(stockers) do
-                        local amount, wasReadable = readStocker(stocker)
+                      return remaining, needed, projectedRuntime
+                      end
 
-                        total = total + amount
+                      local function readStocker(stocker)
+                      if not stocker or type(stocker.side) ~= "number" then
+                        return 0, false
+                        end
 
-                        if wasReadable then
-                          readable = readable + 1
+                        local ok, tank = pcall(
+                          transposer.getFluidInTank,
+                          stocker.side,
+                          1
+                        )
+
+                        if not ok or not tank or tank.amount == nil then
+                          return 0, false
                           end
 
-                          details[#details + 1] = string.format(
-                            "%s %s L",
-                            stocker.name or "?",
-                            numberText(amount)
-                          )
+                          return tonumber(tank.amount) or 0, true
                           end
 
-                          return total, details, readable
-                          end
+                          local function getTankInformation()
+                          local total = 0
+                          local details = {}
+                          local readable = 0
 
-                          local function getTankAmount()
-                          local total = getTankInformation()
-                          return total
-                          end
+                          for _, stocker in ipairs(stockers) do
+                            local amount, wasReadable = readStocker(stocker)
 
-                          local function isHoleOpen()
-                          return redstone.getInput(hatchSide) > 0
-                          end
+                            total = total + amount
 
-                          local function isRecipeActive()
-                          local ok, result = pcall(bhc.hasWork)
-                          return ok and result == true
-                          end
+                            if wasReadable then
+                              readable = readable + 1
+                              end
 
-                          local function getTX()
-                          local ok, value = pcall(
-                            redstone.getOutput,
-                            transmitterSide
-                          )
-
-                          if ok then
-                            return tonumber(value) or 0
-                            end
-
-                            return state.spacetimeOn and 15 or 0
-                            end
-
-                            local function enableController(showError)
-                            local ok, result = pcall(
-                              bhc.setWorkAllowed,
-                              true
-                            )
-
-                            if not ok and showError then
-                              emit(
-                                "BHC WARNING: Could not enable controller: "
-                                .. cleanText(result)
+                              details[#details + 1] = string.format(
+                                "%s %s L",
+                                stocker.name or "?",
+                                numberText(amount)
                               )
                               end
 
-                              return ok
+                              return total, details, readable
                               end
 
-                              local function resetState()
-                              local previousSleepMessage = state.lastSleepMessage
-
-                              state.phase = "STANDBY"
-                              state.seedInsertedAt = nil
-                              state.holeStart = nil
-                              state.stability = 100
-                              state.stabilityTime = nil
-                              state.spacetimeOn = false
-                              state.spacetimeOnAt = nil
-                              state.lastTank = nil
-                              state.lastActualStability = nil
-                              state.lastActualTime = nil
-                              state.actualSeen = false
-                              state.fallbackLossStart = nil
-                              state.fallbackLossStability = nil
-                              state.expectedClosing = false
-                              state.emergencyClosing = false
-                              state.idleSince = nil
-                              state.lastSleepMessage = previousSleepMessage
+                              local function getTankAmount()
+                              local total = getTankInformation()
+                              return total
                               end
 
-                              -- ===================== STABILITY DATA =====================
+                              local function isHoleOpen()
+                              return redstone.getInput(hatchSide) > 0
+                              end
 
-                              local controllerAddress = bhc.address
-                              local controllerMethods = nil
+                              local function isRecipeActive()
+                              local ok, result = pcall(bhc.hasWork)
+                              return ok and result == true
+                              end
 
-                              local function sortedKeys(tbl)
-                              local keys = {}
+                              local function getTX()
+                              local ok, value = pcall(
+                                redstone.getOutput,
+                                transmitterSide
+                              )
 
-                              for key in pairs(tbl or {}) do
-                                keys[#keys + 1] = key
+                              if ok then
+                                return tonumber(value) or 0
                                 end
 
-                                table.sort(keys, function(a, b)
-                                return tostring(a) < tostring(b)
-                                end)
-
-                                return keys
+                                return state.spacetimeOn and 15 or 0
                                 end
 
-                                local function getControllerAddress()
-                                if controllerAddress then
-                                  return controllerAddress
+                                local function enableController(showError)
+                                local ok, result = pcall(
+                                  bhc.setWorkAllowed,
+                                  true
+                                )
+
+                                if not ok and showError then
+                                  emit(
+                                    "BHC WARNING: Could not enable controller: "
+                                    .. cleanText(result)
+                                  )
                                   end
 
-                                  local iterator = component.list("gt_machine", true)
+                                  return ok
+                                  end
 
-                                  if iterator then
-                                    controllerAddress = iterator()
+                                  local function resetState()
+                                  local previousSleepMessage = state.lastSleepMessage
+
+                                  state.phase = "STANDBY"
+                                  state.seedInsertedAt = nil
+                                  state.holeStart = nil
+                                  state.stability = 100
+                                  state.stabilityTime = nil
+                                  state.spacetimeOn = false
+                                  state.spacetimeOnAt = nil
+                                  state.lastTank = nil
+                                  state.lastActualStability = nil
+                                  state.lastActualTime = nil
+                                  state.actualSeen = false
+                                  state.fallbackLossStart = nil
+                                  state.fallbackLossStability = nil
+                                  state.expectedClosing = false
+                                  state.emergencyClosing = false
+                                  state.idleSince = nil
+                                  state.lastSleepMessage = previousSleepMessage
+                                  end
+
+                                  -- ===================== STABILITY DATA =====================
+
+                                  local controllerAddress = bhc.address
+                                  local controllerMethods = nil
+
+                                  local function sortedKeys(tbl)
+                                  local keys = {}
+
+                                  for key in pairs(tbl or {}) do
+                                    keys[#keys + 1] = key
                                     end
 
-                                    return controllerAddress
+                                    table.sort(keys, function(a, b)
+                                    return tostring(a) < tostring(b)
+                                    end)
+
+                                    return keys
                                     end
 
-                                    local function getControllerMethods()
-                                    if controllerMethods then
-                                      return controllerMethods
+                                    local function getControllerAddress()
+                                    if controllerAddress then
+                                      return controllerAddress
                                       end
 
-                                      local address = getControllerAddress()
+                                      local iterator = component.list("gt_machine", true)
 
-                                      if not address then
-                                        return nil
+                                      if iterator then
+                                        controllerAddress = iterator()
                                         end
 
-                                        local ok, methods = pcall(component.methods, address)
+                                        return controllerAddress
+                                        end
 
-                                        if ok and type(methods) == "table" then
-                                          controllerMethods = methods
+                                        local function getControllerMethods()
+                                        if controllerMethods then
                                           return controllerMethods
                                           end
 
-                                          return nil
-                                          end
-
-                                          local function isReaderMethod(name)
-                                          return name:match("^get")
-                                          or name:match("^is")
-                                          or name:match("^has")
-                                          or name:match("^can")
-                                          end
-
-                                          local function invokeReader(name)
                                           local address = getControllerAddress()
 
                                           if not address then
-                                            return false, nil
+                                            return nil
                                             end
 
-                                            local result = {
-                                              pcall(component.invoke, address, name)
-                                            }
+                                            local ok, methods = pcall(component.methods, address)
 
-                                            if not result[1] then
-                                              return false, nil
+                                            if ok and type(methods) == "table" then
+                                              controllerMethods = methods
+                                              return controllerMethods
                                               end
 
-                                              table.remove(result, 1)
-                                              return true, result
+                                              return nil
                                               end
 
-                                              local function findStability(value, context, seen, depth)
-                                              context = tostring(context or "")
-                                              seen = seen or {}
-                                              depth = depth or 0
+                                              local function isReaderMethod(name)
+                                              return name:match("^get")
+                                              or name:match("^is")
+                                              or name:match("^has")
+                                              or name:match("^can")
+                                              end
 
-                                              if type(value) == "number" then
-                                                if context:lower():find("stability", 1, true) then
-                                                  return tonumber(value)
+                                              local function invokeReader(name)
+                                              local address = getControllerAddress()
+
+                                              if not address then
+                                                return false, nil
+                                                end
+
+                                                local result = {
+                                                  pcall(component.invoke, address, name)
+                                                }
+
+                                                if not result[1] then
+                                                  return false, nil
                                                   end
 
-                                                  return nil
+                                                  table.remove(result, 1)
+                                                  return true, result
                                                   end
 
-                                                  if type(value) == "string" then
-                                                    local text = cleanText(value)
-                                                    local lowerText = text:lower()
-                                                    local lowerContext = context:lower()
+                                                  local function findStability(value, context, seen, depth)
+                                                  context = tostring(context or "")
+                                                  seen = seen or {}
+                                                  depth = depth or 0
 
-                                                    if lowerText:find("stability", 1, true)
-                                                      or lowerContext:find("stability", 1, true) then
+                                                  if type(value) == "number" then
+                                                    if context:lower():find("stability", 1, true) then
+                                                      return tonumber(value)
+                                                      end
 
-                                                      local found =
-                                                      text:match("([%d%.]+)%s*%%")
-                                                      or text:match("[Ss]tability[^%d]*([%d%.]+)")
+                                                      return nil
+                                                      end
 
-                                                      if tonumber(found) then
-                                                        return tonumber(found)
-                                                        end
-                                                        end
+                                                      if type(value) == "string" then
+                                                        local text = cleanText(value)
+                                                        local lowerText = text:lower()
+                                                        local lowerContext = context:lower()
 
-                                                        return nil
-                                                        end
+                                                        if lowerText:find("stability", 1, true)
+                                                          or lowerContext:find("stability", 1, true) then
 
-                                                        if type(value) ~= "table"
-                                                          or seen[value]
-                                                          or depth >= 4 then
+                                                          local found =
+                                                          text:match("([%d%.]+)%s*%%")
+                                                          or text:match("[Ss]tability[^%d]*([%d%.]+)")
 
-                                                          return nil
-                                                          end
+                                                          if tonumber(found) then
+                                                            return tonumber(found)
+                                                            end
+                                                            end
 
-                                                          seen[value] = true
+                                                            return nil
+                                                            end
 
-                                                          for _, key in ipairs(sortedKeys(value)) do
-                                                            local found = findStability(
-                                                              value[key],
-                                                              context .. "[" .. tostring(key) .. "]",
-                                                                                        seen,
-                                                                                        depth + 1
-                                                            )
+                                                            if type(value) ~= "table"
+                                                              or seen[value]
+                                                              or depth >= 4 then
 
-                                                            if found ~= nil then
-                                                              seen[value] = nil
-                                                              return found
-                                                              end
-                                                              end
-
-                                                              seen[value] = nil
                                                               return nil
                                                               end
 
-                                                              local function readActualStability()
-                                                              local methods = getControllerMethods()
+                                                              seen[value] = true
 
-                                                              if not methods then
-                                                                return nil
-                                                                end
+                                                              for _, key in ipairs(sortedKeys(value)) do
+                                                                local found = findStability(
+                                                                  value[key],
+                                                                  context .. "[" .. tostring(key) .. "]",
+                                                                                            seen,
+                                                                                            depth + 1
+                                                                )
 
-                                                                for _, name in ipairs(sortedKeys(methods)) do
-                                                                  if isReaderMethod(name)
-                                                                    and name:lower():find("stability", 1, true) then
+                                                                if found ~= nil then
+                                                                  seen[value] = nil
+                                                                  return found
+                                                                  end
+                                                                  end
 
-                                                                    local ok, values = invokeReader(name)
+                                                                  seen[value] = nil
+                                                                  return nil
+                                                                  end
 
-                                                                    if ok then
-                                                                      for _, value in ipairs(values) do
-                                                                        if type(value) == "number" then
-                                                                          return tonumber(value)
-                                                                          end
+                                                                  local function readActualStability()
+                                                                  local methods = getControllerMethods()
 
-                                                                          local found = findStability(value, name, {}, 0)
+                                                                  if not methods then
+                                                                    return nil
+                                                                    end
 
-                                                                          if found ~= nil then
-                                                                            return found
-                                                                            end
-                                                                            end
-                                                                            end
-                                                                            end
-                                                                            end
+                                                                    for _, name in ipairs(sortedKeys(methods)) do
+                                                                      if isReaderMethod(name)
+                                                                        and name:lower():find("stability", 1, true) then
 
-                                                                            if methods.getSensorInformation then
-                                                                              local ok, values = invokeReader("getSensorInformation")
+                                                                        local ok, values = invokeReader(name)
 
-                                                                              if ok then
-                                                                                for _, value in ipairs(values) do
-                                                                                  local found = findStability(
-                                                                                    value,
-                                                                                    "getSensorInformation",
-                                                                                    {},
-                                                                                    0
-                                                                                  )
+                                                                        if ok then
+                                                                          for _, value in ipairs(values) do
+                                                                            if type(value) == "number" then
+                                                                              return tonumber(value)
+                                                                              end
 
-                                                                                  if found ~= nil then
-                                                                                    return found
-                                                                                    end
-                                                                                    end
-                                                                                    end
-                                                                                    end
+                                                                              local found = findStability(value, name, {}, 0)
 
-                                                                                    return nil
-                                                                                    end
+                                                                              if found ~= nil then
+                                                                                return found
+                                                                                end
+                                                                                end
+                                                                                end
+                                                                                end
+                                                                                end
 
-                                                                                    local function getEstimatedStability(now, tankAmount, tx)
-                                                                                    now = now or computer.uptime()
-                                                                                    tankAmount = tankAmount or getTankAmount()
-                                                                                    tx = tx or getTX()
+                                                                                if methods.getSensorInformation then
+                                                                                  local ok, values = invokeReader("getSensorInformation")
 
-                                                                                    if not state.holeStart or not state.stabilityTime then
-                                                                                      return nil
-                                                                                      end
+                                                                                  if ok then
+                                                                                    for _, value in ipairs(values) do
+                                                                                      local found = findStability(
+                                                                                        value,
+                                                                                        "getSensorInformation",
+                                                                                        {},
+                                                                                        0
+                                                                                      )
 
-                                                                                      if state.spacetimeOn then
-                                                                                        if tx >= 15 and tankAmount > 0 then
-                                                                                          state.fallbackLossStart = nil
-                                                                                          state.fallbackLossStability = nil
-                                                                                          return math.max(0, state.stability)
+                                                                                      if found ~= nil then
+                                                                                        return found
+                                                                                        end
+                                                                                        end
+                                                                                        end
+                                                                                        end
+
+                                                                                        return nil
+                                                                                        end
+
+                                                                                        local function getEstimatedStability(now, tankAmount, tx)
+                                                                                        now = now or computer.uptime()
+                                                                                        tankAmount = tankAmount or getTankAmount()
+                                                                                        tx = tx or getTX()
+
+                                                                                        if not state.holeStart or not state.stabilityTime then
+                                                                                          return nil
                                                                                           end
 
-                                                                                          if not state.fallbackLossStart then
-                                                                                            state.fallbackLossStart = now
-                                                                                            state.fallbackLossStability = state.stability
-                                                                                            end
-
-                                                                                            return math.max(
-                                                                                              0,
-                                                                                              state.fallbackLossStability
-                                                                                              - (now - state.fallbackLossStart)
-                                                                                            )
-                                                                                            end
-
-                                                                                            return math.max(
-                                                                                              0,
-                                                                                              state.stability - (now - state.stabilityTime)
-                                                                                            )
-                                                                                            end
-
-                                                                                            local function getRecipeData()
-                                                                                            local progress = bhc.getWorkProgress() or 0
-                                                                                            local maximum = bhc.getWorkMaxProgress() or 0
-                                                                                            local percent = 0
-
-                                                                                            if maximum > 0 then
-                                                                                              percent = progress / maximum * 100
+                                                                                          if state.spacetimeOn then
+                                                                                            if tx >= 15 and tankAmount > 0 then
+                                                                                              state.fallbackLossStart = nil
+                                                                                              state.fallbackLossStability = nil
+                                                                                              return math.max(0, state.stability)
                                                                                               end
 
-                                                                                              return progress, maximum, percent
-                                                                                              end
-
-                                                                                              local function sampleStatus()
-                                                                                              local now = computer.uptime()
-                                                                                              local tank = getTankAmount()
-                                                                                              local tx = getTX()
-
-                                                                                              local tankDelta = nil
-
-                                                                                              if state.lastTank ~= nil then
-                                                                                                tankDelta = state.lastTank - tank
+                                                                                              if not state.fallbackLossStart then
+                                                                                                state.fallbackLossStart = now
+                                                                                                state.fallbackLossStability = state.stability
                                                                                                 end
 
-                                                                                                state.lastTank = tank
+                                                                                                return math.max(
+                                                                                                  0,
+                                                                                                  state.fallbackLossStability
+                                                                                                  - (now - state.fallbackLossStart)
+                                                                                                )
+                                                                                                end
 
-                                                                                                local actual = readActualStability()
-                                                                                                local stability
-                                                                                                local stabilityType
+                                                                                                return math.max(
+                                                                                                  0,
+                                                                                                  state.stability - (now - state.stabilityTime)
+                                                                                                )
+                                                                                                end
 
-                                                                                                if actual ~= nil then
-                                                                                                  state.actualSeen = true
-                                                                                                  state.lastActualStability = actual
-                                                                                                  state.lastActualTime = now
-                                                                                                  state.stability = actual
-                                                                                                  state.stabilityTime = now
-                                                                                                  state.fallbackLossStart = nil
-                                                                                                  state.fallbackLossStability = nil
+                                                                                                local function getRecipeData()
+                                                                                                local progress = bhc.getWorkProgress() or 0
+                                                                                                local maximum = bhc.getWorkMaxProgress() or 0
+                                                                                                local percent = 0
 
-                                                                                                  stability = actual
-                                                                                                  stabilityType = "ACT"
-                                                                                                  else
-                                                                                                    stability = getEstimatedStability(now, tank, tx)
-                                                                                                    stabilityType = "EST"
+                                                                                                if maximum > 0 then
+                                                                                                  percent = progress / maximum * 100
+                                                                                                  end
+
+                                                                                                  return progress, maximum, percent
+                                                                                                  end
+
+                                                                                                  local function sampleStatus()
+                                                                                                  local now = computer.uptime()
+                                                                                                  local tank = getTankAmount()
+                                                                                                  local tx = getTX()
+
+                                                                                                  local tankDelta = nil
+
+                                                                                                  if state.lastTank ~= nil then
+                                                                                                    tankDelta = state.lastTank - tank
                                                                                                     end
 
-                                                                                                    local progress, maximum, percent = getRecipeData()
+                                                                                                    state.lastTank = tank
 
-                                                                                                    return {
-                                                                                                      now = now,
-                                                                                                      elapsed = elapsedRuntime(now),
-                                                                                                      holeOpen = isHoleOpen(),
-                                                                                                      recipeActive = isRecipeActive(),
-                                                                                                      progress = progress,
-                                                                                                      maximum = maximum,
-                                                                                                      recipePercent = percent,
-                                                                                                      tank = tank,
-                                                                                                      tankDelta = tankDelta,
-                                                                                                      tx = tx,
-                                                                                                      stability = stability,
-                                                                                                      stabilityType = stabilityType
-                                                                                                    }
-                                                                                                    end
+                                                                                                    local actual = readActualStability()
+                                                                                                    local stability
+                                                                                                    local stabilityType
 
-                                                                                                    local function flowText(sample)
-                                                                                                    if not state.spacetimeOn then
-                                                                                                      return "OFF"
-                                                                                                      end
+                                                                                                    if actual ~= nil then
+                                                                                                      state.actualSeen = true
+                                                                                                      state.lastActualStability = actual
+                                                                                                      state.lastActualTime = now
+                                                                                                      state.stability = actual
+                                                                                                      state.stabilityTime = now
+                                                                                                      state.fallbackLossStart = nil
+                                                                                                      state.fallbackLossStability = nil
 
-                                                                                                      if sample.tankDelta == nil then
-                                                                                                        return "ON - WAITING"
+                                                                                                      stability = actual
+                                                                                                      stabilityType = "ACT"
+                                                                                                      else
+                                                                                                        stability = getEstimatedStability(now, tank, tx)
+                                                                                                        stabilityType = "EST"
                                                                                                         end
 
-                                                                                                        if sample.tankDelta > 0 then
-                                                                                                          return "FLOW "
-                                                                                                          .. numberText(sample.tankDelta)
-                                                                                                          .. " L"
+                                                                                                        local progress, maximum, percent = getRecipeData()
+
+                                                                                                        return {
+                                                                                                          now = now,
+                                                                                                          elapsed = elapsedRuntime(now),
+                                                                                                          holeOpen = isHoleOpen(),
+                                                                                                          recipeActive = isRecipeActive(),
+                                                                                                          progress = progress,
+                                                                                                          maximum = maximum,
+                                                                                                          recipePercent = percent,
+                                                                                                          tank = tank,
+                                                                                                          tankDelta = tankDelta,
+                                                                                                          tx = tx,
+                                                                                                          stability = stability,
+                                                                                                          stabilityType = stabilityType
+                                                                                                        }
+                                                                                                        end
+
+                                                                                                        local function flowText(sample)
+                                                                                                        if not state.spacetimeOn then
+                                                                                                          return "OFF"
                                                                                                           end
 
-                                                                                                          if sample.tankDelta < 0 then
-                                                                                                            return "REFILL +"
-                                                                                                            .. numberText(-sample.tankDelta)
-                                                                                                            .. " L"
+                                                                                                          if sample.tankDelta == nil then
+                                                                                                            return "ON - WAITING"
                                                                                                             end
 
-                                                                                                            return "ON - NO TANK CHANGE"
-                                                                                                            end
-
-                                                                                                            -- ============================ UI ============================
-
-                                                                                                            ui = {
-                                                                                                              ready = false,
-                                                                                                              w = 0,
-                                                                                                              h = 0,
-                                                                                                              logLines = {},
-                                                                                                              lastSample = nil,
-                                                                                                              lastSleepText = "Waiting for request signal.",
-                                                                                                              drawErrorShown = false,
-                                                                                                              buffer = nil,
-                                                                                                              usingBuffer = false,
-                                                                                                              firstDraw = true,
-                                                                                                              lastLayout = nil
-                                                                                                            }
-
-                                                                                                            local function clamp(value, minimum, maximum)
-                                                                                                            if value < minimum then
-                                                                                                              return minimum
+                                                                                                            if sample.tankDelta > 0 then
+                                                                                                              return "FLOW "
+                                                                                                              .. numberText(sample.tankDelta)
+                                                                                                              .. " L"
                                                                                                               end
 
-                                                                                                              if value > maximum then
-                                                                                                                return maximum
+                                                                                                              if sample.tankDelta < 0 then
+                                                                                                                return "REFILL +"
+                                                                                                                .. numberText(-sample.tankDelta)
+                                                                                                                .. " L"
                                                                                                                 end
 
-                                                                                                                return value
+                                                                                                                return "ON - NO TANK CHANGE"
                                                                                                                 end
 
-                                                                                                                local function ulen(value)
-                                                                                                                local ok, length = pcall(unicode.len, tostring(value or ""))
-                                                                                                                return ok and length or #tostring(value or "")
-                                                                                                                end
+                                                                                                                -- ============================ UI ============================
 
-                                                                                                                local function usub(value, first, last)
-                                                                                                                local textValue = tostring(value or "")
-                                                                                                                local ok, result = pcall(unicode.sub, textValue, first, last)
-                                                                                                                return ok and result or textValue:sub(first, last)
-                                                                                                                end
+                                                                                                                ui = {
+                                                                                                                  ready = false,
+                                                                                                                  w = 0,
+                                                                                                                  h = 0,
+                                                                                                                  logLines = {},
+                                                                                                                  lastSample = nil,
+                                                                                                                  lastSleepText = "Waiting for request signal.",
+                                                                                                                  drawErrorShown = false,
+                                                                                                                  buffer = nil,
+                                                                                                                  usingBuffer = false,
+                                                                                                                  firstDraw = true,
+                                                                                                                  lastLayout = nil
+                                                                                                                }
 
-                                                                                                                local function clipped(value, width)
-                                                                                                                width = math.max(0, math.floor(tonumber(width) or 0))
-                                                                                                                local textValue = tostring(value or "")
-
-                                                                                                                if width <= 0 then
-                                                                                                                  return ""
+                                                                                                                local function clamp(value, minimum, maximum)
+                                                                                                                if value < minimum then
+                                                                                                                  return minimum
                                                                                                                   end
 
-                                                                                                                  if ulen(textValue) <= width then
-                                                                                                                    return textValue
+                                                                                                                  if value > maximum then
+                                                                                                                    return maximum
                                                                                                                     end
 
-                                                                                                                    if width <= 3 then
-                                                                                                                      return usub(textValue, 1, width)
+                                                                                                                    return value
+                                                                                                                    end
+
+                                                                                                                    local function ulen(value)
+                                                                                                                    local ok, length = pcall(unicode.len, tostring(value or ""))
+                                                                                                                    return ok and length or #tostring(value or "")
+                                                                                                                    end
+
+                                                                                                                    local function usub(value, first, last)
+                                                                                                                    local textValue = tostring(value or "")
+                                                                                                                    local ok, result = pcall(unicode.sub, textValue, first, last)
+                                                                                                                    return ok and result or textValue:sub(first, last)
+                                                                                                                    end
+
+                                                                                                                    local function clipped(value, width)
+                                                                                                                    width = math.max(0, math.floor(tonumber(width) or 0))
+                                                                                                                    local textValue = tostring(value or "")
+
+                                                                                                                    if width <= 0 then
+                                                                                                                      return ""
                                                                                                                       end
 
-                                                                                                                      return usub(textValue, 1, width - 3) .. "..."
-                                                                                                                      end
-
-                                                                                                                      local function padRight(value, width)
-                                                                                                                      local result = clipped(value, width)
-                                                                                                                      return result .. string.rep(" ", math.max(0, width - ulen(result)))
-                                                                                                                      end
-
-                                                                                                                      local function centerText(value, width)
-                                                                                                                      local result = clipped(value, width)
-                                                                                                                      local remaining = math.max(0, width - ulen(result))
-                                                                                                                      local left = math.floor(remaining / 2)
-                                                                                                                      return string.rep(" ", left)
-                                                                                                                      .. result
-                                                                                                                      .. string.rep(" ", remaining - left)
-                                                                                                                      end
-
-                                                                                                                      local function wrapText(value, width, maxLines)
-                                                                                                                      width = math.max(1, math.floor(tonumber(width) or 1))
-                                                                                                                      maxLines = math.max(1, math.floor(tonumber(maxLines) or 1))
-
-                                                                                                                      local words = {}
-                                                                                                                      for word in tostring(value or ""):gmatch("%S+") do
-                                                                                                                        words[#words + 1] = word
+                                                                                                                      if ulen(textValue) <= width then
+                                                                                                                        return textValue
                                                                                                                         end
 
-                                                                                                                        local lines = {}
-                                                                                                                        local current = ""
+                                                                                                                        if width <= 3 then
+                                                                                                                          return usub(textValue, 1, width)
+                                                                                                                          end
 
-                                                                                                                        for _, word in ipairs(words) do
-                                                                                                                          local candidate = current == "" and word or current .. " " .. word
+                                                                                                                          return usub(textValue, 1, width - 3) .. "..."
+                                                                                                                          end
 
-                                                                                                                          if ulen(candidate) <= width then
-                                                                                                                            current = candidate
-                                                                                                                            else
-                                                                                                                              if current ~= "" then
-                                                                                                                                lines[#lines + 1] = clipped(current, width)
-                                                                                                                                end
+                                                                                                                          local function padRight(value, width)
+                                                                                                                          local result = clipped(value, width)
+                                                                                                                          return result .. string.rep(" ", math.max(0, width - ulen(result)))
+                                                                                                                          end
 
-                                                                                                                                current = clipped(word, width)
+                                                                                                                          local function centerText(value, width)
+                                                                                                                          local result = clipped(value, width)
+                                                                                                                          local remaining = math.max(0, width - ulen(result))
+                                                                                                                          local left = math.floor(remaining / 2)
+                                                                                                                          return string.rep(" ", left)
+                                                                                                                          .. result
+                                                                                                                          .. string.rep(" ", remaining - left)
+                                                                                                                          end
 
-                                                                                                                                if #lines >= maxLines then
-                                                                                                                                  break
-                                                                                                                                  end
-                                                                                                                                  end
-                                                                                                                                  end
+                                                                                                                          local function wrapText(value, width, maxLines)
+                                                                                                                          width = math.max(1, math.floor(tonumber(width) or 1))
+                                                                                                                          maxLines = math.max(1, math.floor(tonumber(maxLines) or 1))
 
-                                                                                                                                  if #lines < maxLines and current ~= "" then
+                                                                                                                          local words = {}
+                                                                                                                          for word in tostring(value or ""):gmatch("%S+") do
+                                                                                                                            words[#words + 1] = word
+                                                                                                                            end
+
+                                                                                                                            local lines = {}
+                                                                                                                            local current = ""
+
+                                                                                                                            for _, word in ipairs(words) do
+                                                                                                                              local candidate = current == "" and word or current .. " " .. word
+
+                                                                                                                              if ulen(candidate) <= width then
+                                                                                                                                current = candidate
+                                                                                                                                else
+                                                                                                                                  if current ~= "" then
                                                                                                                                     lines[#lines + 1] = clipped(current, width)
                                                                                                                                     end
 
-                                                                                                                                    if #lines == 0 then
-                                                                                                                                      lines[1] = ""
+                                                                                                                                    current = clipped(word, width)
+
+                                                                                                                                    if #lines >= maxLines then
+                                                                                                                                      break
+                                                                                                                                      end
+                                                                                                                                      end
                                                                                                                                       end
 
-                                                                                                                                      return lines
-                                                                                                                                      end
-
-                                                                                                                                      local function setColors(foreground, background)
-                                                                                                                                      if foreground then
-                                                                                                                                        pcall(gpu.setForeground, foreground)
+                                                                                                                                      if #lines < maxLines and current ~= "" then
+                                                                                                                                        lines[#lines + 1] = clipped(current, width)
                                                                                                                                         end
 
-                                                                                                                                        if background then
-                                                                                                                                          pcall(gpu.setBackground, background)
-                                                                                                                                          end
+                                                                                                                                        if #lines == 0 then
+                                                                                                                                          lines[1] = ""
                                                                                                                                           end
 
-                                                                                                                                          local function fill(x, y, width, height, character, foreground, background)
-                                                                                                                                          width = math.floor(tonumber(width) or 0)
-                                                                                                                                          height = math.floor(tonumber(height) or 0)
+                                                                                                                                          return lines
+                                                                                                                                          end
 
-                                                                                                                                          if width <= 0 or height <= 0 then
-                                                                                                                                            return
+                                                                                                                                          local function setColors(foreground, background)
+                                                                                                                                          if foreground then
+                                                                                                                                            pcall(gpu.setForeground, foreground)
                                                                                                                                             end
 
-                                                                                                                                            setColors(foreground, background)
-                                                                                                                                            gpu.fill(x, y, width, height, character or " ")
-                                                                                                                                            end
-
-                                                                                                                                            local function drawText(x, y, value, foreground, background, maxWidth)
-                                                                                                                                            if x < 1 or y < 1 or x > ui.w or y > ui.h then
-                                                                                                                                              return
+                                                                                                                                            if background then
+                                                                                                                                              pcall(gpu.setBackground, background)
+                                                                                                                                              end
                                                                                                                                               end
 
-                                                                                                                                              local width = maxWidth or (ui.w - x + 1)
-                                                                                                                                              width = math.min(width, ui.w - x + 1)
+                                                                                                                                              local function fill(x, y, width, height, character, foreground, background)
+                                                                                                                                              width = math.floor(tonumber(width) or 0)
+                                                                                                                                              height = math.floor(tonumber(height) or 0)
 
-                                                                                                                                              if width <= 0 then
+                                                                                                                                              if width <= 0 or height <= 0 then
                                                                                                                                                 return
                                                                                                                                                 end
 
                                                                                                                                                 setColors(foreground, background)
-                                                                                                                                                gpu.set(x, y, clipped(value, width))
+                                                                                                                                                gpu.fill(x, y, width, height, character or " ")
                                                                                                                                                 end
 
-                                                                                                                                                local function box(x, y, width, height, title, background, border)
-                                                                                                                                                width = math.min(math.floor(width), ui.w - x + 1)
-                                                                                                                                                height = math.min(math.floor(height), ui.h - y + 1)
-
-                                                                                                                                                if width < 4 or height < 3 then
+                                                                                                                                                local function drawText(x, y, value, foreground, background, maxWidth)
+                                                                                                                                                if x < 1 or y < 1 or x > ui.w or y > ui.h then
                                                                                                                                                   return
                                                                                                                                                   end
 
-                                                                                                                                                  background = background or C.panel
-                                                                                                                                                  border = border or C.border
+                                                                                                                                                  local width = maxWidth or (ui.w - x + 1)
+                                                                                                                                                  width = math.min(width, ui.w - x + 1)
 
-                                                                                                                                                  fill(x, y, width, height, " ", C.text, background)
-                                                                                                                                                  setColors(border, background)
-
-                                                                                                                                                  gpu.set(x, y, "+" .. string.rep("-", width - 2) .. "+")
-
-                                                                                                                                                  for yy = y + 1, y + height - 2 do
-                                                                                                                                                    gpu.set(x, yy, "|")
-                                                                                                                                                    gpu.set(x + width - 1, yy, "|")
+                                                                                                                                                  if width <= 0 then
+                                                                                                                                                    return
                                                                                                                                                     end
 
-                                                                                                                                                    gpu.set(x, y + height - 1, "+" .. string.rep("-", width - 2) .. "+")
+                                                                                                                                                    setColors(foreground, background)
+                                                                                                                                                    gpu.set(x, y, clipped(value, width))
+                                                                                                                                                    end
 
-                                                                                                                                                    if title and title ~= "" then
-                                                                                                                                                      drawText(
-                                                                                                                                                        x + 2,
-                                                                                                                                                        y,
-                                                                                                                                                        " " .. title .. " ",
-                                                                                                                                                        C.text,
-                                                                                                                                                        background,
-                                                                                                                                                        width - 4
-                                                                                                                                                      )
-                                                                                                                                                      end
+                                                                                                                                                    local function box(x, y, width, height, title, background, border)
+                                                                                                                                                    width = math.min(math.floor(width), ui.w - x + 1)
+                                                                                                                                                    height = math.min(math.floor(height), ui.h - y + 1)
+
+                                                                                                                                                    if width < 4 or height < 3 then
+                                                                                                                                                      return
                                                                                                                                                       end
 
-                                                                                                                                                      local function progressBar(x, y, width, ratio, color, label, background)
-                                                                                                                                                      width = math.max(4, math.floor(tonumber(width) or 4))
-                                                                                                                                                      ratio = clamp(tonumber(ratio) or 0, 0, 1)
                                                                                                                                                       background = background or C.panel
+                                                                                                                                                      border = border or C.border
 
-                                                                                                                                                      local inner = width - 2
-                                                                                                                                                      local filledCount = math.floor(inner * ratio + 0.5)
-                                                                                                                                                      local emptyCount = inner - filledCount
+                                                                                                                                                      fill(x, y, width, height, " ", C.text, background)
+                                                                                                                                                      setColors(border, background)
 
-                                                                                                                                                      drawText(
-                                                                                                                                                        x,
-                                                                                                                                                        y,
-                                                                                                                                                        "[" .. string.rep("=", filledCount) .. string.rep("-", emptyCount) .. "]",
-                                                                                                                                                               color or C.accent,
-                                                                                                                                                               background,
-                                                                                                                                                               width
-                                                                                                                                                      )
+                                                                                                                                                      gpu.set(x, y, "+" .. string.rep("-", width - 2) .. "+")
 
-                                                                                                                                                      if label then
-                                                                                                                                                        drawText(
-                                                                                                                                                          x + 1,
-                                                                                                                                                          y,
-                                                                                                                                                          centerText(label, inner),
-                                                                                                                                                                 C.white,
-                                                                                                                                                                 background,
-                                                                                                                                                                 inner
-                                                                                                                                                        )
-                                                                                                                                                        end
+                                                                                                                                                      for yy = y + 1, y + height - 2 do
+                                                                                                                                                        gpu.set(x, yy, "|")
+                                                                                                                                                        gpu.set(x + width - 1, yy, "|")
                                                                                                                                                         end
 
-                                                                                                                                                        local function logTimestamp()
-                                                                                                                                                        local ok, result = pcall(os.date, "%H:%M:%S")
+                                                                                                                                                        gpu.set(x, y + height - 1, "+" .. string.rep("-", width - 2) .. "+")
 
-                                                                                                                                                        if ok and result then
-                                                                                                                                                          return result
+                                                                                                                                                        if title and title ~= "" then
+                                                                                                                                                          drawText(
+                                                                                                                                                            x + 2,
+                                                                                                                                                            y,
+                                                                                                                                                            " " .. title .. " ",
+                                                                                                                                                            C.text,
+                                                                                                                                                            background,
+                                                                                                                                                            width - 4
+                                                                                                                                                          )
+                                                                                                                                                          end
                                                                                                                                                           end
 
-                                                                                                                                                          return formatElapsed(computer.uptime())
-                                                                                                                                                          end
+                                                                                                                                                          local function progressBar(x, y, width, ratio, color, label, background)
+                                                                                                                                                          width = math.max(4, math.floor(tonumber(width) or 4))
+                                                                                                                                                          ratio = clamp(tonumber(ratio) or 0, 0, 1)
+                                                                                                                                                          background = background or C.panel
 
-                                                                                                                                                          local function stateColor(sample)
-                                                                                                                                                          if state.emergencyClosing or state.phase == "EMERGENCY" then
-                                                                                                                                                            return C.bad
+                                                                                                                                                          local inner = width - 2
+                                                                                                                                                          local filledCount = math.floor(inner * ratio + 0.5)
+                                                                                                                                                          local emptyCount = inner - filledCount
+
+                                                                                                                                                          drawText(
+                                                                                                                                                            x,
+                                                                                                                                                            y,
+                                                                                                                                                            "[" .. string.rep("=", filledCount) .. string.rep("-", emptyCount) .. "]",
+                                                                                                                                                                   color or C.accent,
+                                                                                                                                                                   background,
+                                                                                                                                                                   width
+                                                                                                                                                          )
+
+                                                                                                                                                          if label then
+                                                                                                                                                            drawText(
+                                                                                                                                                              x + 1,
+                                                                                                                                                              y,
+                                                                                                                                                              centerText(label, inner),
+                                                                                                                                                                     C.white,
+                                                                                                                                                                     background,
+                                                                                                                                                                     inner
+                                                                                                                                                            )
+                                                                                                                                                            end
                                                                                                                                                             end
 
-                                                                                                                                                            if state.expectedClosing or state.phase == "CLOSING" then
-                                                                                                                                                              return C.warn
+                                                                                                                                                            local function logTimestamp()
+                                                                                                                                                            local ok, result = pcall(os.date, "%H:%M:%S")
+
+                                                                                                                                                            if ok and result then
+                                                                                                                                                              return result
                                                                                                                                                               end
 
-                                                                                                                                                              if not sample or not sample.holeOpen then
-                                                                                                                                                                return C.dim
+                                                                                                                                                              return formatElapsed(computer.uptime())
+                                                                                                                                                              end
+
+                                                                                                                                                              local function stateColor(sample)
+                                                                                                                                                              if state.emergencyClosing or state.phase == "EMERGENCY" then
+                                                                                                                                                                return C.bad
                                                                                                                                                                 end
 
-                                                                                                                                                                if sample.stability
-                                                                                                                                                                  and sample.stability <= emergencyCloseStability then
-                                                                                                                                                                  return C.bad
+                                                                                                                                                                if state.expectedClosing or state.phase == "CLOSING" then
+                                                                                                                                                                  return C.warn
                                                                                                                                                                   end
 
-                                                                                                                                                                  if sample.stability
-                                                                                                                                                                    and sample.stability <= targetStability + 5 then
-                                                                                                                                                                    return C.warn
+                                                                                                                                                                  if not sample or not sample.holeOpen then
+                                                                                                                                                                    return C.dim
                                                                                                                                                                     end
 
-                                                                                                                                                                    return C.good
-                                                                                                                                                                    end
-
-                                                                                                                                                                    local function stateLabel(sample)
-                                                                                                                                                                    if state.emergencyClosing or state.phase == "EMERGENCY" then
-                                                                                                                                                                      return "EMERGENCY CLOSE"
+                                                                                                                                                                    if sample.stability
+                                                                                                                                                                      and sample.stability <= emergencyCloseStability then
+                                                                                                                                                                      return C.bad
                                                                                                                                                                       end
 
-                                                                                                                                                                      if state.expectedClosing or state.phase == "CLOSING" then
-                                                                                                                                                                        return "CLOSING"
+                                                                                                                                                                      if sample.stability
+                                                                                                                                                                        and sample.stability <= targetStability + 5 then
+                                                                                                                                                                        return C.warn
                                                                                                                                                                         end
 
-                                                                                                                                                                        if state.phase == "OPENING" then
-                                                                                                                                                                          return "OPENING"
+                                                                                                                                                                        return C.good
+                                                                                                                                                                        end
+
+                                                                                                                                                                        local function stateLabel(sample)
+                                                                                                                                                                        if state.emergencyClosing or state.phase == "EMERGENCY" then
+                                                                                                                                                                          return "EMERGENCY CLOSE"
                                                                                                                                                                           end
 
-                                                                                                                                                                          if not sample or not sample.holeOpen then
-                                                                                                                                                                            return "STANDBY"
+                                                                                                                                                                          if state.expectedClosing or state.phase == "CLOSING" then
+                                                                                                                                                                            return "CLOSING"
                                                                                                                                                                             end
 
-                                                                                                                                                                            if sample.recipeActive then
-                                                                                                                                                                              return "RUNNING"
+                                                                                                                                                                            if state.phase == "OPENING" then
+                                                                                                                                                                              return "OPENING"
                                                                                                                                                                               end
 
-                                                                                                                                                                              return "OPEN / IDLE"
-                                                                                                                                                                              end
+                                                                                                                                                                              if not sample or not sample.holeOpen then
+                                                                                                                                                                                return "STANDBY"
+                                                                                                                                                                                end
 
-                                                                                                                                                                              local function drawLogs(x, y, width, height)
-                                                                                                                                                                              box(x, y, width, height, "EVENT LOG", C.panel, C.border)
-
-                                                                                                                                                                              local capacity = math.max(0, height - 2)
-                                                                                                                                                                              local first = math.max(1, #ui.logLines - capacity + 1)
-                                                                                                                                                                              local lineY = y + 1
-
-                                                                                                                                                                              for index = first, #ui.logLines do
-                                                                                                                                                                                local line = ui.logLines[index]
-
-                                                                                                                                                                                drawText(
-                                                                                                                                                                                  x + 2,
-                                                                                                                                                                                  lineY,
-                                                                                                                                                                                  "[" .. line.time .. "] " .. line.message,
-                                                                                                                                                                                  line.color,
-                                                                                                                                                                                  C.panel,
-                                                                                                                                                                                  width - 4
-                                                                                                                                                                                )
-
-                                                                                                                                                                                lineY = lineY + 1
-
-                                                                                                                                                                                if lineY >= y + height - 1 then
-                                                                                                                                                                                  break
-                                                                                                                                                                                  end
-                                                                                                                                                                                  end
+                                                                                                                                                                                if sample.recipeActive then
+                                                                                                                                                                                  return "RUNNING"
                                                                                                                                                                                   end
 
-                                                                                                                                                                                  local function drawInfoBox(x, y, width, height, sleepText)
-                                                                                                                                                                                  box(x, y, width, height, "INFO", C.panel, C.border)
+                                                                                                                                                                                  return "OPEN / IDLE"
+                                                                                                                                                                                  end
 
-                                                                                                                                                                                  local lines = wrapText(
-                                                                                                                                                                                    sleepText or "Waiting for request signal.",
-                                                                                                                                                                                    math.max(1, width - 4),
-                                                                                                                                                                                                         math.max(1, height - 2)
-                                                                                                                                                                                  )
+                                                                                                                                                                                  local function drawLogs(x, y, width, height)
+                                                                                                                                                                                  box(x, y, width, height, "EVENT LOG", C.panel, C.border)
 
-                                                                                                                                                                                  for index, line in ipairs(lines) do
+                                                                                                                                                                                  local capacity = math.max(0, height - 2)
+                                                                                                                                                                                  local first = math.max(1, #ui.logLines - capacity + 1)
+                                                                                                                                                                                  local lineY = y + 1
+
+                                                                                                                                                                                  for index = first, #ui.logLines do
+                                                                                                                                                                                    local line = ui.logLines[index]
+
                                                                                                                                                                                     drawText(
                                                                                                                                                                                       x + 2,
-                                                                                                                                                                                      y + index,
-                                                                                                                                                                                      line,
-                                                                                                                                                                                      C.dim,
+                                                                                                                                                                                      lineY,
+                                                                                                                                                                                      "[" .. line.time .. "] " .. line.message,
+                                                                                                                                                                                      line.color,
                                                                                                                                                                                       C.panel,
                                                                                                                                                                                       width - 4
                                                                                                                                                                                     )
-                                                                                                                                                                                    end
-                                                                                                                                                                                    end
 
-                                                                                                                                                                                    local function drawFullLayout(sample, sleepText)
-                                                                                                                                                                                    local leftWidth = math.floor((ui.w - 3) * 0.58)
-                                                                                                                                                                                    local rightX = leftWidth + 3
-                                                                                                                                                                                    local rightWidth = ui.w - rightX + 1
+                                                                                                                                                                                    lineY = lineY + 1
 
-                                                                                                                                                                                    local statusColor = stateColor(sample)
-                                                                                                                                                                                    local stability = sample and sample.stability or nil
-                                                                                                                                                                                    local stabilityText = stability
-                                                                                                                                                                                    and string.format("%.1f%% %s", stability, sample.stabilityType or "?")
-                                                                                                                                                                                    or "UNKNOWN"
-                                                                                                                                                                                    local stabilityColor = C.good
+                                                                                                                                                                                    if lineY >= y + height - 1 then
+                                                                                                                                                                                      break
+                                                                                                                                                                                      end
+                                                                                                                                                                                      end
+                                                                                                                                                                                      end
 
-                                                                                                                                                                                    if stability and stability <= emergencyCloseStability then
-                                                                                                                                                                                      stabilityColor = C.bad
-                                                                                                                                                                                      elseif stability and stability <= targetStability + 5 then
-                                                                                                                                                                                        stabilityColor = C.warn
+                                                                                                                                                                                      local function drawInfoBox(x, y, width, height, sleepText)
+                                                                                                                                                                                      box(x, y, width, height, "INFO", C.panel, C.border)
+
+                                                                                                                                                                                      local lines = wrapText(
+                                                                                                                                                                                        sleepText or "Waiting for request signal.",
+                                                                                                                                                                                        math.max(1, width - 4),
+                                                                                                                                                                                                             math.max(1, height - 2)
+                                                                                                                                                                                      )
+
+                                                                                                                                                                                      for index, line in ipairs(lines) do
+                                                                                                                                                                                        drawText(
+                                                                                                                                                                                          x + 2,
+                                                                                                                                                                                          y + index,
+                                                                                                                                                                                          line,
+                                                                                                                                                                                          C.dim,
+                                                                                                                                                                                          C.panel,
+                                                                                                                                                                                          width - 4
+                                                                                                                                                                                        )
+                                                                                                                                                                                        end
                                                                                                                                                                                         end
 
-                                                                                                                                                                                        -- Header
-                                                                                                                                                                                        fill(1, 1, ui.w, 3, " ", C.white, C.panel2)
-                                                                                                                                                                                        drawText(3, 1, "BHC CONTROL DASHBOARD", C.white, C.panel2, ui.w - 28)
-                                                                                                                                                                                        drawText(ui.w - 22, 1, logTimestamp(), C.dim, C.panel2, 20)
-                                                                                                                                                                                        drawText(3, 2, "STATE: " .. stateLabel(sample), statusColor, C.panel2, ui.w - 6)
+                                                                                                                                                                                        local function drawFullLayout(sample, sleepText)
+                                                                                                                                                                                        local leftWidth = math.floor((ui.w - 3) * 0.58)
+                                                                                                                                                                                        local rightX = leftWidth + 3
+                                                                                                                                                                                        local rightWidth = ui.w - rightX + 1
 
-                                                                                                                                                                                        -- Stability
-                                                                                                                                                                                        box(2, 4, leftWidth, 8, "STABILITY", C.panel, C.border)
-                                                                                                                                                                                        drawText(4, 6, "Current:", C.dim, C.panel, 10)
-                                                                                                                                                                                        drawText(14, 6, stabilityText, stabilityColor, C.panel, leftWidth - 16)
-                                                                                                                                                                                        drawText(4, 7, "Inject target:", C.dim, C.panel, 15)
-                                                                                                                                                                                        drawText(19, 7, string.format("%.1f%%", targetStability), C.accent, C.panel, 10)
-                                                                                                                                                                                        drawText(4, 8, "Emergency:", C.dim, C.panel, 12)
-                                                                                                                                                                                        drawText(16, 8, string.format("%.1f%%", emergencyCloseStability), C.bad, C.panel, 10)
-                                                                                                                                                                                        progressBar(4, 10, leftWidth - 4, (stability or 0) / 100, stabilityColor,
-                                                                                                                                                                                                    stability and string.format("%.1f%%", stability) or "UNKNOWN", C.panel)
+                                                                                                                                                                                        local statusColor = stateColor(sample)
+                                                                                                                                                                                        local stability = sample and sample.stability or nil
+                                                                                                                                                                                        local stabilityText = stability
+                                                                                                                                                                                        and string.format("%.1f%% %s", stability, sample.stabilityType or "?")
+                                                                                                                                                                                        or "UNKNOWN"
+                                                                                                                                                                                        local stabilityColor = C.good
 
-                                                                                                                                                                                        -- Recipe
-                                                                                                                                                                                        box(2, 13, leftWidth, 8, "RECIPE", C.panel, C.border)
-                                                                                                                                                                                        local recipePercent = sample and (sample.recipePercent or 0) or 0
-                                                                                                                                                                                        local progress = sample and numberText(sample.progress or 0) or "0"
-                                                                                                                                                                                        local maximum = sample and numberText(sample.maximum or 0) or "0"
-                                                                                                                                                                                        drawText(4, 15, "Status:", C.dim, C.panel, 9)
-                                                                                                                                                                                        drawText(13, 15,
-                                                                                                                                                                                                 sample and (sample.recipeActive and "ACTIVE" or "IDLE") or "IDLE",
-                                                                                                                                                                                                 sample and sample.recipeActive and C.good or C.dim,
-                                                                                                                                                                                                 C.panel,
-                                                                                                                                                                                                 12)
-                                                                                                                                                                                        drawText(4, 16, "Progress:", C.dim, C.panel, 10)
-                                                                                                                                                                                        drawText(14, 16,
-                                                                                                                                                                                                 string.format("%.1f%% (%s/%s)", recipePercent, progress, maximum),
-                                                                                                                                                                                                 C.text,
-                                                                                                                                                                                                 C.panel,
-                                                                                                                                                                                                 leftWidth - 16)
-                                                                                                                                                                                        progressBar(4, 18, leftWidth - 4, recipePercent / 100, C.accent,
-                                                                                                                                                                                                    string.format("%.1f%%", recipePercent), C.panel)
+                                                                                                                                                                                        if stability and stability <= emergencyCloseStability then
+                                                                                                                                                                                          stabilityColor = C.bad
+                                                                                                                                                                                          elseif stability and stability <= targetStability + 5 then
+                                                                                                                                                                                            stabilityColor = C.warn
+                                                                                                                                                                                            end
 
-                                                                                                                                                                                        -- Runtime
-                                                                                                                                                                                        box(2, 22, leftWidth, 6, "RUNTIME", C.panel, C.border)
-                                                                                                                                                                                        drawText(4, 24, "Elapsed:", C.dim, C.panel, 9)
-                                                                                                                                                                                        drawText(13, 24, sample and formatElapsed(sample.elapsed or 0) or "00:00:00",
-                                                                                                                                                                                                 C.text, C.panel, 10)
-                                                                                                                                                                                        drawText(27, 24, "Hole:", C.dim, C.panel, 6)
-                                                                                                                                                                                        drawText(33, 24,
-                                                                                                                                                                                                 sample and (sample.holeOpen and "OPEN" or "CLOSED") or "CLOSED",
-                                                                                                                                                                                                 sample and sample.holeOpen and C.good or C.dim,
-                                                                                                                                                                                                 C.panel,
-                                                                                                                                                                                                 8)
-                                                                                                                                                                                        drawText(44, 24, "TX:", C.dim, C.panel, 4)
-                                                                                                                                                                                        drawText(48, 24, tostring(sample and sample.tx or 0), C.text, C.panel, 4)
+                                                                                                                                                                                            -- Header
+                                                                                                                                                                                            fill(1, 1, ui.w, 3, " ", C.white, C.panel2)
+                                                                                                                                                                                            drawText(3, 1, "BHC CONTROL DASHBOARD", C.white, C.panel2, ui.w - 28)
+                                                                                                                                                                                            drawText(ui.w - 22, 1, logTimestamp(), C.dim, C.panel2, 20)
+                                                                                                                                                                                            drawText(3, 2, "STATE: " .. stateLabel(sample), statusColor, C.panel2, ui.w - 6)
 
-                                                                                                                                                                                        if state.idleSince and sample then
-                                                                                                                                                                                          drawText(56, 24,
-                                                                                                                                                                                                   string.format("Idle %.0fs", sample.now - state.idleSince),
-                                                                                                                                                                                                   C.warn,
-                                                                                                                                                                                                   C.panel,
-                                                                                                                                                                                                   leftWidth - 58)
-                                                                                                                                                                                          end
+                                                                                                                                                                                            -- Stability
+                                                                                                                                                                                            box(2, 4, leftWidth, 8, "STABILITY", C.panel, C.border)
+                                                                                                                                                                                            drawText(4, 6, "Current:", C.dim, C.panel, 10)
+                                                                                                                                                                                            drawText(14, 6, stabilityText, stabilityColor, C.panel, leftWidth - 16)
+                                                                                                                                                                                            drawText(4, 7, "Inject target:", C.dim, C.panel, 15)
+                                                                                                                                                                                            drawText(19, 7, string.format("%.1f%%", targetStability), C.accent, C.panel, 10)
+                                                                                                                                                                                            drawText(4, 8, "Emergency:", C.dim, C.panel, 12)
+                                                                                                                                                                                            drawText(16, 8, string.format("%.1f%%", emergencyCloseStability), C.bad, C.panel, 10)
+                                                                                                                                                                                            progressBar(4, 10, leftWidth - 4, (stability or 0) / 100, stabilityColor,
+                                                                                                                                                                                                        stability and string.format("%.1f%%", stability) or "UNKNOWN", C.panel)
 
-                                                                                                                                                                                          -- Spacetime
-                                                                                                                                                                                          box(rightX, 4, rightWidth, 11, "SPACETIME", C.panel, C.border)
-                                                                                                                                                                                          local available, tankDetails, readable = getTankInformation()
-                                                                                                                                                                                          local remaining, needed = calculateSpacetime(maxRuntime, available)
-                                                                                                                                                                                          local reserveText
-                                                                                                                                                                                          local reserveColor
+                                                                                                                                                                                            -- Recipe
+                                                                                                                                                                                            box(2, 13, leftWidth, 8, "RECIPE", C.panel, C.border)
+                                                                                                                                                                                            local recipePercent = sample and (sample.recipePercent or 0) or 0
+                                                                                                                                                                                            local progress = sample and numberText(sample.progress or 0) or "0"
+                                                                                                                                                                                            local maximum = sample and numberText(sample.maximum or 0) or "0"
+                                                                                                                                                                                            drawText(4, 15, "Status:", C.dim, C.panel, 9)
+                                                                                                                                                                                            drawText(13, 15,
+                                                                                                                                                                                                     sample and (sample.recipeActive and "ACTIVE" or "IDLE") or "IDLE",
+                                                                                                                                                                                                     sample and sample.recipeActive and C.good or C.dim,
+                                                                                                                                                                                                     C.panel,
+                                                                                                                                                                                                     12)
+                                                                                                                                                                                            drawText(4, 16, "Progress:", C.dim, C.panel, 10)
+                                                                                                                                                                                            drawText(14, 16,
+                                                                                                                                                                                                     string.format("%.1f%% (%s/%s)", recipePercent, progress, maximum),
+                                                                                                                                                                                                     C.text,
+                                                                                                                                                                                                     C.panel,
+                                                                                                                                                                                                     leftWidth - 16)
+                                                                                                                                                                                            progressBar(4, 18, leftWidth - 4, recipePercent / 100, C.accent,
+                                                                                                                                                                                                        string.format("%.1f%%", recipePercent), C.panel)
 
-                                                                                                                                                                                          if remaining >= 0 then
-                                                                                                                                                                                            reserveText = "Reserve: " .. numberText(remaining) .. " L"
-                                                                                                                                                                                            reserveColor = C.good
-                                                                                                                                                                                            else
-                                                                                                                                                                                              reserveText = "MISSING: " .. numberText(-remaining) .. " L"
-                                                                                                                                                                                              reserveColor = C.bad
+                                                                                                                                                                                            -- Runtime
+                                                                                                                                                                                            box(2, 22, leftWidth, 6, "RUNTIME", C.panel, C.border)
+                                                                                                                                                                                            drawText(4, 24, "Elapsed:", C.dim, C.panel, 9)
+                                                                                                                                                                                            drawText(13, 24, sample and formatElapsed(sample.elapsed or 0) or "00:00:00",
+                                                                                                                                                                                                     C.text, C.panel, 10)
+                                                                                                                                                                                            drawText(27, 24, "Hole:", C.dim, C.panel, 6)
+                                                                                                                                                                                            drawText(33, 24,
+                                                                                                                                                                                                     sample and (sample.holeOpen and "OPEN" or "CLOSED") or "CLOSED",
+                                                                                                                                                                                                     sample and sample.holeOpen and C.good or C.dim,
+                                                                                                                                                                                                     C.panel,
+                                                                                                                                                                                                     8)
+                                                                                                                                                                                            drawText(44, 24, "TX:", C.dim, C.panel, 4)
+                                                                                                                                                                                            drawText(48, 24, tostring(sample and sample.tx or 0), C.text, C.panel, 4)
+
+                                                                                                                                                                                            if state.idleSince and sample then
+                                                                                                                                                                                              drawText(56, 24,
+                                                                                                                                                                                                       string.format("Idle %.0fs", sample.now - state.idleSince),
+                                                                                                                                                                                                       C.warn,
+                                                                                                                                                                                                       C.panel,
+                                                                                                                                                                                                       leftWidth - 58)
                                                                                                                                                                                               end
 
-                                                                                                                                                                                              drawText(rightX + 2, 6, "Available: " .. numberText(available) .. " L",
-                                                                                                                                                                                                       readable > 0 and C.text or C.bad, C.panel, rightWidth - 4)
-                                                                                                                                                                                              drawText(rightX + 2, 7, "Required:  " .. numberText(needed) .. " L",
-                                                                                                                                                                                                       C.dim, C.panel, rightWidth - 4)
-                                                                                                                                                                                              drawText(rightX + 2, 8, reserveText, reserveColor, C.panel, rightWidth - 4)
-                                                                                                                                                                                              drawText(rightX + 2, 9, "Flow: " .. (sample and flowText(sample) or "OFF"),
-                                                                                                                                                                                                       state.spacetimeOn and C.good or C.dim, C.panel, rightWidth - 4)
+                                                                                                                                                                                              -- Spacetime
+                                                                                                                                                                                              box(rightX, 4, rightWidth, 11, "SPACETIME", C.panel, C.border)
+                                                                                                                                                                                              local available, tankDetails, readable = getTankInformation()
+                                                                                                                                                                                              local remaining, needed, projectedRuntime = getSpacetimeRequirement(
+                                                                                                                                                                                                available,
+                                                                                                                                                                                                sample
+                                                                                                                                                                                              )
+                                                                                                                                                                                              local reserveText
+                                                                                                                                                                                              local reserveColor
 
-                                                                                                                                                                                              local detailY = 11
-                                                                                                                                                                                              for index = 1, math.min(#tankDetails, 3) do
-                                                                                                                                                                                                drawText(rightX + 2, detailY, tankDetails[index], C.text, C.panel, rightWidth - 4)
-                                                                                                                                                                                                detailY = detailY + 1
-                                                                                                                                                                                                end
-
-                                                                                                                                                                                                -- Config
-                                                                                                                                                                                                box(rightX, 16, rightWidth, 8, "CONFIG", C.panel, C.border)
-                                                                                                                                                                                                drawText(rightX + 2, 18, "Max runtime: " .. tostring(maxRuntime) .. "s",
-                                                                                                                                                                                                         C.text, C.panel, rightWidth - 4)
-                                                                                                                                                                                                drawText(rightX + 2, 19,
-                                                                                                                                                                                                         "Idle close: " .. tostring(closeWhenIdle)
-                                                                                                                                                                                                         .. " after " .. tostring(idleCloseSeconds) .. "s",
-                                                                                                                                                                                                         closeWhenIdle and C.good or C.dim,
-                                                                                                                                                                                                         C.panel,
-                                                                                                                                                                                                         rightWidth - 4)
-                                                                                                                                                                                                drawText(rightX + 2, 20, "Minimum open: " .. tostring(minimumRuntimeBeforeIdleClose) .. "s",
-                                                                                                                                                                                                         C.text, C.panel, rightWidth - 4)
-                                                                                                                                                                                                drawText(rightX + 2, 21, "Void protection: " .. tostring(voidProtection),
-                                                                                                                                                                                                         voidProtection and C.good or C.dim, C.panel, rightWidth - 4)
-                                                                                                                                                                                                drawText(rightX + 2, 22, "Use Collapser: " .. tostring(useCollapser),
-                                                                                                                                                                                                         useCollapser and C.good or C.warn, C.panel, rightWidth - 4)
-
-                                                                                                                                                                                                -- Info
-                                                                                                                                                                                                drawInfoBox(rightX, 25, rightWidth, 5, sleepText)
-
-                                                                                                                                                                                                -- Logs
-                                                                                                                                                                                                local logY = 31
-                                                                                                                                                                                                local logHeight = ui.h - logY + 1
-
-                                                                                                                                                                                                if logHeight >= 4 then
-                                                                                                                                                                                                  drawLogs(2, logY, ui.w - 2, logHeight)
-                                                                                                                                                                                                  end
+                                                                                                                                                                                              if remaining >= 0 then
+                                                                                                                                                                                                reserveText = "Reserve: " .. numberText(remaining) .. " L"
+                                                                                                                                                                                                reserveColor = C.good
+                                                                                                                                                                                                else
+                                                                                                                                                                                                  reserveText = "MISSING: " .. numberText(-remaining) .. " L"
+                                                                                                                                                                                                  reserveColor = C.bad
                                                                                                                                                                                                   end
 
-                                                                                                                                                                                                  local function drawCompactLayout(sample, sleepText)
-                                                                                                                                                                                                  local statusColor = stateColor(sample)
-                                                                                                                                                                                                  local stability = sample and sample.stability or nil
-                                                                                                                                                                                                  local stabilityColor = C.good
+                                                                                                                                                                                                  drawText(rightX + 2, 6, "Available: " .. numberText(available) .. " L",
+                                                                                                                                                                                                           readable > 0 and C.text or C.bad, C.panel, rightWidth - 4)
+                                                                                                                                                                                                  drawText(rightX + 2, 7, "Required:  " .. numberText(needed) .. " L",
+                                                                                                                                                                                                           C.dim, C.panel, rightWidth - 4)
+                                                                                                                                                                                                  drawText(rightX + 2, 8,
+                                                                                                                                                                                                           "Protected runtime: " .. numberText(projectedRuntime) .. "s",
+                                                                                                                                                                                                           C.dim, C.panel, rightWidth - 4)
+                                                                                                                                                                                                  drawText(rightX + 2, 9, reserveText, reserveColor, C.panel, rightWidth - 4)
+                                                                                                                                                                                                  drawText(rightX + 2, 10, "Flow: " .. (sample and flowText(sample) or "OFF"),
+                                                                                                                                                                                                           state.spacetimeOn and C.good or C.dim, C.panel, rightWidth - 4)
 
-                                                                                                                                                                                                  if stability and stability <= emergencyCloseStability then
-                                                                                                                                                                                                    stabilityColor = C.bad
-                                                                                                                                                                                                    elseif stability and stability <= targetStability + 5 then
-                                                                                                                                                                                                      stabilityColor = C.warn
+                                                                                                                                                                                                  local detailY = 12
+                                                                                                                                                                                                  for index = 1, math.min(#tankDetails, 3) do
+                                                                                                                                                                                                    drawText(rightX + 2, detailY, tankDetails[index], C.text, C.panel, rightWidth - 4)
+                                                                                                                                                                                                    detailY = detailY + 1
+                                                                                                                                                                                                    end
+
+                                                                                                                                                                                                    -- Config
+                                                                                                                                                                                                    box(rightX, 16, rightWidth, 8, "CONFIG", C.panel, C.border)
+                                                                                                                                                                                                    drawText(rightX + 2, 18, "Max runtime: " .. tostring(maxRuntime) .. "s",
+                                                                                                                                                                                                             C.text, C.panel, rightWidth - 4)
+                                                                                                                                                                                                    drawText(rightX + 2, 19,
+                                                                                                                                                                                                             "Idle close: " .. tostring(closeWhenIdle)
+                                                                                                                                                                                                             .. " after " .. tostring(idleCloseSeconds) .. "s",
+                                                                                                                                                                                                             closeWhenIdle and C.good or C.dim,
+                                                                                                                                                                                                             C.panel,
+                                                                                                                                                                                                             rightWidth - 4)
+                                                                                                                                                                                                    drawText(rightX + 2, 20, "Minimum open: " .. tostring(minimumRuntimeBeforeIdleClose) .. "s",
+                                                                                                                                                                                                             C.text, C.panel, rightWidth - 4)
+                                                                                                                                                                                                    drawText(rightX + 2, 21, "Void protection: " .. tostring(voidProtection),
+                                                                                                                                                                                                             voidProtection and C.good or C.dim, C.panel, rightWidth - 4)
+                                                                                                                                                                                                    drawText(rightX + 2, 22, "Use Collapser: " .. tostring(useCollapser),
+                                                                                                                                                                                                             useCollapser and C.good or C.warn, C.panel, rightWidth - 4)
+
+                                                                                                                                                                                                    -- Info
+                                                                                                                                                                                                    drawInfoBox(rightX, 25, rightWidth, 5, sleepText)
+
+                                                                                                                                                                                                    -- Logs
+                                                                                                                                                                                                    local logY = 31
+                                                                                                                                                                                                    local logHeight = ui.h - logY + 1
+
+                                                                                                                                                                                                    if logHeight >= 4 then
+                                                                                                                                                                                                      drawLogs(2, logY, ui.w - 2, logHeight)
+                                                                                                                                                                                                      end
                                                                                                                                                                                                       end
 
-                                                                                                                                                                                                      fill(1, 1, ui.w, 2, " ", C.white, C.panel2)
-                                                                                                                                                                                                      drawText(2, 1, "BHC DASHBOARD", C.white, C.panel2, ui.w - 18)
-                                                                                                                                                                                                      drawText(ui.w - 9, 1, logTimestamp(), C.dim, C.panel2, 8)
-                                                                                                                                                                                                      drawText(2, 2, "STATE: " .. stateLabel(sample), statusColor, C.panel2, ui.w - 4)
+                                                                                                                                                                                                      local function drawCompactLayout(sample, sleepText)
+                                                                                                                                                                                                      local statusColor = stateColor(sample)
+                                                                                                                                                                                                      local stability = sample and sample.stability or nil
+                                                                                                                                                                                                      local stabilityColor = C.good
 
-                                                                                                                                                                                                      box(1, 3, ui.w, 5, "MACHINE", C.panel, C.border)
-                                                                                                                                                                                                      local stabilityText = stability
-                                                                                                                                                                                                      and string.format("%.1f%% %s", stability, sample.stabilityType or "?")
-                                                                                                                                                                                                      or "UNKNOWN"
-                                                                                                                                                                                                      drawText(3, 4,
-                                                                                                                                                                                                               "STAB " .. stabilityText
-                                                                                                                                                                                                               .. " | T " .. (sample and formatElapsed(sample.elapsed or 0) or "00:00:00")
-                                                                                                                                                                                                               .. " | Hole " .. (sample and (sample.holeOpen and "OPEN" or "CLOSED") or "CLOSED")
-                                                                                                                                                                                                               .. " | TX " .. tostring(sample and sample.tx or 0),
-                                                                                                                                                                                                               stabilityColor,
-                                                                                                                                                                                                               C.panel,
-                                                                                                                                                                                                               ui.w - 4)
-                                                                                                                                                                                                      progressBar(3, 6, ui.w - 4, (stability or 0) / 100, stabilityColor,
-                                                                                                                                                                                                                  stability and string.format("%.1f%%", stability) or "UNKNOWN", C.panel)
-
-                                                                                                                                                                                                      box(1, 8, ui.w, 5, "RECIPE", C.panel, C.border)
-                                                                                                                                                                                                      local recipePercent = sample and (sample.recipePercent or 0) or 0
-                                                                                                                                                                                                      drawText(3, 9,
-                                                                                                                                                                                                               (sample and sample.recipeActive and "ACTIVE" or "IDLE")
-                                                                                                                                                                                                               .. " | " .. string.format("%.1f%%", recipePercent)
-                                                                                                                                                                                                               .. " | " .. numberText(sample and sample.progress or 0)
-                                                                                                                                                                                                               .. "/" .. numberText(sample and sample.maximum or 0),
-                                                                                                                                                                                                               sample and sample.recipeActive and C.good or C.dim,
-                                                                                                                                                                                                               C.panel,
-                                                                                                                                                                                                               ui.w - 4)
-                                                                                                                                                                                                      progressBar(3, 11, ui.w - 4, recipePercent / 100, C.accent,
-                                                                                                                                                                                                                  string.format("%.1f%%", recipePercent), C.panel)
-
-                                                                                                                                                                                                      box(1, 13, ui.w, 6, "SPACETIME", C.panel, C.border)
-                                                                                                                                                                                                      local available, tankDetails, readable = getTankInformation()
-                                                                                                                                                                                                      local remaining, needed = calculateSpacetime(maxRuntime, available)
-                                                                                                                                                                                                      local reserveText = remaining >= 0
-                                                                                                                                                                                                      and ("Reserve " .. numberText(remaining) .. " L")
-                                                                                                                                                                                                      or ("MISSING " .. numberText(-remaining) .. " L")
-                                                                                                                                                                                                      local reserveColor = remaining >= 0 and C.good or C.bad
-
-                                                                                                                                                                                                      drawText(3, 14,
-                                                                                                                                                                                                               "Available " .. numberText(available) .. " L | Required " .. numberText(needed) .. " L",
-                                                                                                                                                                                                               readable > 0 and C.text or C.bad,
-                                                                                                                                                                                                               C.panel,
-                                                                                                                                                                                                               ui.w - 4)
-                                                                                                                                                                                                      drawText(3, 15,
-                                                                                                                                                                                                               reserveText .. " | Flow " .. (sample and flowText(sample) or "OFF"),
-                                                                                                                                                                                                               reserveColor,
-                                                                                                                                                                                                               C.panel,
-                                                                                                                                                                                                               ui.w - 4)
-                                                                                                                                                                                                      drawText(3, 16, table.concat(tankDetails, " | "), C.dim, C.panel, ui.w - 4)
-                                                                                                                                                                                                      drawText(3, 17,
-                                                                                                                                                                                                               "Runtime " .. maxRuntime .. "s | Idle close " .. tostring(closeWhenIdle)
-                                                                                                                                                                                                               .. " | Collapser " .. tostring(useCollapser),
-                                                                                                                                                                                                               C.dim,
-                                                                                                                                                                                                               C.panel,
-                                                                                                                                                                                                               ui.w - 4)
-
-                                                                                                                                                                                                      drawInfoBox(1, 19, ui.w, 3, sleepText)
-
-                                                                                                                                                                                                      local logY = 22
-                                                                                                                                                                                                      local logHeight = ui.h - logY + 1
-
-                                                                                                                                                                                                      if logHeight >= 4 then
-                                                                                                                                                                                                        drawLogs(1, logY, ui.w, logHeight)
-                                                                                                                                                                                                        end
-                                                                                                                                                                                                        end
-
-                                                                                                                                                                                                        local function drawDashboard(sample, sleepText)
-                                                                                                                                                                                                        ui.lastSample = sample or ui.lastSample
-
-                                                                                                                                                                                                        if sleepText ~= nil then
-                                                                                                                                                                                                          ui.lastSleepText = sleepText
+                                                                                                                                                                                                      if stability and stability <= emergencyCloseStability then
+                                                                                                                                                                                                        stabilityColor = C.bad
+                                                                                                                                                                                                        elseif stability and stability <= targetStability + 5 then
+                                                                                                                                                                                                          stabilityColor = C.warn
                                                                                                                                                                                                           end
 
-                                                                                                                                                                                                          sample = ui.lastSample
-                                                                                                                                                                                                          ui.w, ui.h = gpu.getResolution()
+                                                                                                                                                                                                          fill(1, 1, ui.w, 2, " ", C.white, C.panel2)
+                                                                                                                                                                                                          drawText(2, 1, "BHC DASHBOARD", C.white, C.panel2, ui.w - 18)
+                                                                                                                                                                                                          drawText(ui.w - 9, 1, logTimestamp(), C.dim, C.panel2, 8)
+                                                                                                                                                                                                          drawText(2, 2, "STATE: " .. stateLabel(sample), statusColor, C.panel2, ui.w - 4)
 
-                                                                                                                                                                                                          local layout = (ui.w >= 100 and ui.h >= 35)
-                                                                                                                                                                                                          and "FULL"
-                                                                                                                                                                                                          or "COMPACT"
+                                                                                                                                                                                                          box(1, 3, ui.w, 5, "MACHINE", C.panel, C.border)
+                                                                                                                                                                                                          local stabilityText = stability
+                                                                                                                                                                                                          and string.format("%.1f%% %s", stability, sample.stabilityType or "?")
+                                                                                                                                                                                                          or "UNKNOWN"
+                                                                                                                                                                                                          drawText(3, 4,
+                                                                                                                                                                                                                   "STAB " .. stabilityText
+                                                                                                                                                                                                                   .. " | T " .. (sample and formatElapsed(sample.elapsed or 0) or "00:00:00")
+                                                                                                                                                                                                                   .. " | Hole " .. (sample and (sample.holeOpen and "OPEN" or "CLOSED") or "CLOSED")
+                                                                                                                                                                                                                   .. " | TX " .. tostring(sample and sample.tx or 0),
+                                                                                                                                                                                                                   stabilityColor,
+                                                                                                                                                                                                                   C.panel,
+                                                                                                                                                                                                                   ui.w - 4)
+                                                                                                                                                                                                          progressBar(3, 6, ui.w - 4, (stability or 0) / 100, stabilityColor,
+                                                                                                                                                                                                                      stability and string.format("%.1f%%", stability) or "UNKNOWN", C.panel)
 
-                                                                                                                                                                                                          -- With an off-screen VRAM buffer this clear is invisible. Without a
-                                                                                                                                                                                                          -- buffer, only clear on the first frame or after a layout change so the
-                                                                                                                                                                                                          -- screen does not flash blank before every one-second redraw.
-                                                                                                                                                                                                          if ui.usingBuffer
-                                                                                                                                                                                                            or ui.firstDraw
-                                                                                                                                                                                                            or ui.lastLayout ~= layout then
-                                                                                                                                                                                                            fill(1, 1, ui.w, ui.h, " ", C.text, C.bg)
+                                                                                                                                                                                                          box(1, 8, ui.w, 5, "RECIPE", C.panel, C.border)
+                                                                                                                                                                                                          local recipePercent = sample and (sample.recipePercent or 0) or 0
+                                                                                                                                                                                                          drawText(3, 9,
+                                                                                                                                                                                                                   (sample and sample.recipeActive and "ACTIVE" or "IDLE")
+                                                                                                                                                                                                                   .. " | " .. string.format("%.1f%%", recipePercent)
+                                                                                                                                                                                                                   .. " | " .. numberText(sample and sample.progress or 0)
+                                                                                                                                                                                                                   .. "/" .. numberText(sample and sample.maximum or 0),
+                                                                                                                                                                                                                   sample and sample.recipeActive and C.good or C.dim,
+                                                                                                                                                                                                                   C.panel,
+                                                                                                                                                                                                                   ui.w - 4)
+                                                                                                                                                                                                          progressBar(3, 11, ui.w - 4, recipePercent / 100, C.accent,
+                                                                                                                                                                                                                      string.format("%.1f%%", recipePercent), C.panel)
+
+                                                                                                                                                                                                          box(1, 13, ui.w, 6, "SPACETIME", C.panel, C.border)
+                                                                                                                                                                                                          local available, tankDetails, readable = getTankInformation()
+                                                                                                                                                                                                          local remaining, needed, projectedRuntime = getSpacetimeRequirement(
+                                                                                                                                                                                                            available,
+                                                                                                                                                                                                            sample
+                                                                                                                                                                                                          )
+                                                                                                                                                                                                          local reserveText = remaining >= 0
+                                                                                                                                                                                                          and ("Reserve " .. numberText(remaining) .. " L")
+                                                                                                                                                                                                          or ("MISSING " .. numberText(-remaining) .. " L")
+                                                                                                                                                                                                          local reserveColor = remaining >= 0 and C.good or C.bad
+
+                                                                                                                                                                                                          drawText(3, 14,
+                                                                                                                                                                                                                   "Available " .. numberText(available) .. " L | Required " .. numberText(needed)
+                                                                                                                                                                                                                   .. " L | Protect " .. numberText(projectedRuntime) .. "s",
+                                                                                                                                                                                                                   readable > 0 and C.text or C.bad,
+                                                                                                                                                                                                                   C.panel,
+                                                                                                                                                                                                                   ui.w - 4)
+                                                                                                                                                                                                          drawText(3, 15,
+                                                                                                                                                                                                                   reserveText .. " | Flow " .. (sample and flowText(sample) or "OFF"),
+                                                                                                                                                                                                                   reserveColor,
+                                                                                                                                                                                                                   C.panel,
+                                                                                                                                                                                                                   ui.w - 4)
+                                                                                                                                                                                                          drawText(3, 16, table.concat(tankDetails, " | "), C.dim, C.panel, ui.w - 4)
+                                                                                                                                                                                                          drawText(3, 17,
+                                                                                                                                                                                                                   "Runtime " .. maxRuntime .. "s | Idle close " .. tostring(closeWhenIdle)
+                                                                                                                                                                                                                   .. " | Collapser " .. tostring(useCollapser),
+                                                                                                                                                                                                                   C.dim,
+                                                                                                                                                                                                                   C.panel,
+                                                                                                                                                                                                                   ui.w - 4)
+
+                                                                                                                                                                                                          drawInfoBox(1, 19, ui.w, 3, sleepText)
+
+                                                                                                                                                                                                          local logY = 22
+                                                                                                                                                                                                          local logHeight = ui.h - logY + 1
+
+                                                                                                                                                                                                          if logHeight >= 4 then
+                                                                                                                                                                                                            drawLogs(1, logY, ui.w, logHeight)
+                                                                                                                                                                                                            end
                                                                                                                                                                                                             end
 
-                                                                                                                                                                                                            if layout == "FULL" then
-                                                                                                                                                                                                              drawFullLayout(sample, ui.lastSleepText)
-                                                                                                                                                                                                              else
-                                                                                                                                                                                                                drawCompactLayout(sample, ui.lastSleepText)
+                                                                                                                                                                                                            local function drawDashboard(sample, sleepText)
+                                                                                                                                                                                                            ui.lastSample = sample or ui.lastSample
+
+                                                                                                                                                                                                            if sleepText ~= nil then
+                                                                                                                                                                                                              ui.lastSleepText = sleepText
+                                                                                                                                                                                                              end
+
+                                                                                                                                                                                                              sample = ui.lastSample
+                                                                                                                                                                                                              ui.w, ui.h = gpu.getResolution()
+
+                                                                                                                                                                                                              local layout = (ui.w >= 100 and ui.h >= 35)
+                                                                                                                                                                                                              and "FULL"
+                                                                                                                                                                                                              or "COMPACT"
+
+                                                                                                                                                                                                              -- With an off-screen VRAM buffer this clear is invisible. Without a
+                                                                                                                                                                                                              -- buffer, only clear on the first frame or after a layout change so the
+                                                                                                                                                                                                              -- screen does not flash blank before every one-second redraw.
+                                                                                                                                                                                                              if ui.usingBuffer
+                                                                                                                                                                                                                or ui.firstDraw
+                                                                                                                                                                                                                or ui.lastLayout ~= layout then
+                                                                                                                                                                                                                fill(1, 1, ui.w, ui.h, " ", C.text, C.bg)
                                                                                                                                                                                                                 end
 
-                                                                                                                                                                                                                ui.firstDraw = false
-                                                                                                                                                                                                                ui.lastLayout = layout
-                                                                                                                                                                                                                end
-
-                                                                                                                                                                                                                local function releaseUIBuffer()
-                                                                                                                                                                                                                pcall(gpu.setActiveBuffer, 0)
-
-                                                                                                                                                                                                                if ui.buffer then
-                                                                                                                                                                                                                  pcall(gpu.freeBuffer, ui.buffer)
-                                                                                                                                                                                                                  end
-
-                                                                                                                                                                                                                  ui.buffer = nil
-                                                                                                                                                                                                                  ui.usingBuffer = false
-                                                                                                                                                                                                                  ui.firstDraw = true
-                                                                                                                                                                                                                  end
-
-                                                                                                                                                                                                                  local function drawDirect(sample, sleepText)
-                                                                                                                                                                                                                  pcall(gpu.setActiveBuffer, 0)
-                                                                                                                                                                                                                  return pcall(drawDashboard, sample, sleepText)
-                                                                                                                                                                                                                  end
-
-                                                                                                                                                                                                                  function ui.draw(sample, sleepText)
-                                                                                                                                                                                                                  if not ui.ready then
-                                                                                                                                                                                                                    return false
+                                                                                                                                                                                                                if layout == "FULL" then
+                                                                                                                                                                                                                  drawFullLayout(sample, ui.lastSleepText)
+                                                                                                                                                                                                                  else
+                                                                                                                                                                                                                    drawCompactLayout(sample, ui.lastSleepText)
                                                                                                                                                                                                                     end
 
-                                                                                                                                                                                                                    local ok
-                                                                                                                                                                                                                    local errorMessage
+                                                                                                                                                                                                                    ui.firstDraw = false
+                                                                                                                                                                                                                    ui.lastLayout = layout
+                                                                                                                                                                                                                    end
 
-                                                                                                                                                                                                                    if ui.usingBuffer and ui.buffer then
-                                                                                                                                                                                                                      local switched, switchError = pcall(
-                                                                                                                                                                                                                        gpu.setActiveBuffer,
-                                                                                                                                                                                                                        ui.buffer
-                                                                                                                                                                                                                      )
+                                                                                                                                                                                                                    local function releaseUIBuffer()
+                                                                                                                                                                                                                    pcall(gpu.setActiveBuffer, 0)
 
-                                                                                                                                                                                                                      if switched then
-                                                                                                                                                                                                                        ok, errorMessage = pcall(
-                                                                                                                                                                                                                          drawDashboard,
-                                                                                                                                                                                                                          sample,
-                                                                                                                                                                                                                          sleepText
-                                                                                                                                                                                                                        )
+                                                                                                                                                                                                                    if ui.buffer then
+                                                                                                                                                                                                                      pcall(gpu.freeBuffer, ui.buffer)
+                                                                                                                                                                                                                      end
 
-                                                                                                                                                                                                                        pcall(gpu.setActiveBuffer, 0)
+                                                                                                                                                                                                                      ui.buffer = nil
+                                                                                                                                                                                                                      ui.usingBuffer = false
+                                                                                                                                                                                                                      ui.firstDraw = true
+                                                                                                                                                                                                                      end
 
-                                                                                                                                                                                                                        if ok then
-                                                                                                                                                                                                                          local copied, copyError = pcall(
-                                                                                                                                                                                                                            gpu.bitblt,
-                                                                                                                                                                                                                            0,
-                                                                                                                                                                                                                            1,
-                                                                                                                                                                                                                            1,
-                                                                                                                                                                                                                            ui.w,
-                                                                                                                                                                                                                            ui.h,
-                                                                                                                                                                                                                            ui.buffer,
-                                                                                                                                                                                                                            1,
-                                                                                                                                                                                                                            1
+                                                                                                                                                                                                                      local function drawDirect(sample, sleepText)
+                                                                                                                                                                                                                      pcall(gpu.setActiveBuffer, 0)
+                                                                                                                                                                                                                      return pcall(drawDashboard, sample, sleepText)
+                                                                                                                                                                                                                      end
+
+                                                                                                                                                                                                                      function ui.draw(sample, sleepText)
+                                                                                                                                                                                                                      if not ui.ready then
+                                                                                                                                                                                                                        return false
+                                                                                                                                                                                                                        end
+
+                                                                                                                                                                                                                        local ok
+                                                                                                                                                                                                                        local errorMessage
+
+                                                                                                                                                                                                                        if ui.usingBuffer and ui.buffer then
+                                                                                                                                                                                                                          local switched, switchError = pcall(
+                                                                                                                                                                                                                            gpu.setActiveBuffer,
+                                                                                                                                                                                                                            ui.buffer
                                                                                                                                                                                                                           )
 
-                                                                                                                                                                                                                          if not copied then
-                                                                                                                                                                                                                            ok = false
-                                                                                                                                                                                                                            errorMessage = copyError
-                                                                                                                                                                                                                            end
-                                                                                                                                                                                                                            end
-                                                                                                                                                                                                                            else
-                                                                                                                                                                                                                              ok = false
-                                                                                                                                                                                                                              errorMessage = switchError
-                                                                                                                                                                                                                              end
+                                                                                                                                                                                                                          if switched then
+                                                                                                                                                                                                                            ok, errorMessage = pcall(
+                                                                                                                                                                                                                              drawDashboard,
+                                                                                                                                                                                                                              sample,
+                                                                                                                                                                                                                              sleepText
+                                                                                                                                                                                                                            )
 
-                                                                                                                                                                                                                              -- If this OpenComputers build exposes buffer methods but cannot use
-                                                                                                                                                                                                                              -- them reliably, fall back to direct drawing without killing the UI.
-                                                                                                                                                                                                                              if not ok then
-                                                                                                                                                                                                                                releaseUIBuffer()
-                                                                                                                                                                                                                                ok, errorMessage = drawDirect(sample, sleepText)
+                                                                                                                                                                                                                            pcall(gpu.setActiveBuffer, 0)
+
+                                                                                                                                                                                                                            if ok then
+                                                                                                                                                                                                                              local copied, copyError = pcall(
+                                                                                                                                                                                                                                gpu.bitblt,
+                                                                                                                                                                                                                                0,
+                                                                                                                                                                                                                                1,
+                                                                                                                                                                                                                                1,
+                                                                                                                                                                                                                                ui.w,
+                                                                                                                                                                                                                                ui.h,
+                                                                                                                                                                                                                                ui.buffer,
+                                                                                                                                                                                                                                1,
+                                                                                                                                                                                                                                1
+                                                                                                                                                                                                                              )
+
+                                                                                                                                                                                                                              if not copied then
+                                                                                                                                                                                                                                ok = false
+                                                                                                                                                                                                                                errorMessage = copyError
+                                                                                                                                                                                                                                end
                                                                                                                                                                                                                                 end
                                                                                                                                                                                                                                 else
-                                                                                                                                                                                                                                  ok, errorMessage = drawDirect(sample, sleepText)
+                                                                                                                                                                                                                                  ok = false
+                                                                                                                                                                                                                                  errorMessage = switchError
                                                                                                                                                                                                                                   end
 
+                                                                                                                                                                                                                                  -- If this OpenComputers build exposes buffer methods but cannot use
+                                                                                                                                                                                                                                  -- them reliably, fall back to direct drawing without killing the UI.
                                                                                                                                                                                                                                   if not ok then
                                                                                                                                                                                                                                     releaseUIBuffer()
-                                                                                                                                                                                                                                    ui.ready = false
-                                                                                                                                                                                                                                    pcall(term.clear)
-                                                                                                                                                                                                                                    pcall(term.setCursor, 1, 1)
-                                                                                                                                                                                                                                    print("BHC UI ERROR: " .. cleanText(errorMessage))
-                                                                                                                                                                                                                                    print("BHC: Continuing in console mode.")
-                                                                                                                                                                                                                                    return false
+                                                                                                                                                                                                                                    ok, errorMessage = drawDirect(sample, sleepText)
                                                                                                                                                                                                                                     end
-
-                                                                                                                                                                                                                                    return true
-                                                                                                                                                                                                                                    end
-
-                                                                                                                                                                                                                                    function ui.log(message, color)
-                                                                                                                                                                                                                                    message = tostring(message or "")
-
-                                                                                                                                                                                                                                    if message == "" then
-                                                                                                                                                                                                                                      return
+                                                                                                                                                                                                                                    else
+                                                                                                                                                                                                                                      ok, errorMessage = drawDirect(sample, sleepText)
                                                                                                                                                                                                                                       end
 
-                                                                                                                                                                                                                                      ui.logLines[#ui.logLines + 1] = {
-                                                                                                                                                                                                                                        time = logTimestamp(),
-                                                                                                                                                                                                                                        message = message,
-                                                                                                                                                                                                                                        color = color or C.text
-                                                                                                                                                                                                                                      }
-
-                                                                                                                                                                                                                                      while #ui.logLines > uiMaxStoredLogLines do
-                                                                                                                                                                                                                                        table.remove(ui.logLines, 1)
+                                                                                                                                                                                                                                      if not ok then
+                                                                                                                                                                                                                                        releaseUIBuffer()
+                                                                                                                                                                                                                                        ui.ready = false
+                                                                                                                                                                                                                                        pcall(term.clear)
+                                                                                                                                                                                                                                        pcall(term.setCursor, 1, 1)
+                                                                                                                                                                                                                                        print("BHC UI ERROR: " .. cleanText(errorMessage))
+                                                                                                                                                                                                                                        print("BHC: Continuing in console mode.")
+                                                                                                                                                                                                                                        return false
                                                                                                                                                                                                                                         end
 
-                                                                                                                                                                                                                                        ui.draw(ui.lastSample, ui.lastSleepText)
+                                                                                                                                                                                                                                        return true
                                                                                                                                                                                                                                         end
 
-                                                                                                                                                                                                                                        function ui.status(sample)
-                                                                                                                                                                                                                                        return ui.draw(sample, ui.lastSleepText)
-                                                                                                                                                                                                                                        end
+                                                                                                                                                                                                                                        function ui.log(message, color)
+                                                                                                                                                                                                                                        message = tostring(message or "")
 
-                                                                                                                                                                                                                                        function ui.setSleepMessage(message, sample)
-                                                                                                                                                                                                                                        ui.lastSleepText = tostring(message or "")
-                                                                                                                                                                                                                                        return ui.draw(sample or ui.lastSample, ui.lastSleepText)
-                                                                                                                                                                                                                                        end
-
-                                                                                                                                                                                                                                        function ui.init()
-                                                                                                                                                                                                                                        if not uiEnabled then
-                                                                                                                                                                                                                                          return false
+                                                                                                                                                                                                                                        if message == "" then
+                                                                                                                                                                                                                                          return
                                                                                                                                                                                                                                           end
 
-                                                                                                                                                                                                                                          if not gpu then
-                                                                                                                                                                                                                                            print("BHC UI WARNING: No GPU component found; using console mode.")
-                                                                                                                                                                                                                                            return false
+                                                                                                                                                                                                                                          ui.logLines[#ui.logLines + 1] = {
+                                                                                                                                                                                                                                            time = logTimestamp(),
+                                                                                                                                                                                                                                            message = message,
+                                                                                                                                                                                                                                            color = color or C.text
+                                                                                                                                                                                                                                          }
+
+                                                                                                                                                                                                                                          while #ui.logLines > uiMaxStoredLogLines do
+                                                                                                                                                                                                                                            table.remove(ui.logLines, 1)
                                                                                                                                                                                                                                             end
 
-                                                                                                                                                                                                                                            pcall(gpu.setActiveBuffer, 0)
+                                                                                                                                                                                                                                            ui.draw(ui.lastSample, ui.lastSleepText)
+                                                                                                                                                                                                                                            end
 
-                                                                                                                                                                                                                                            if uiUseMaximumResolution then
-                                                                                                                                                                                                                                              local ok, maximumWidth, maximumHeight = pcall(gpu.maxResolution)
+                                                                                                                                                                                                                                            function ui.status(sample)
+                                                                                                                                                                                                                                            return ui.draw(sample, ui.lastSleepText)
+                                                                                                                                                                                                                                            end
 
-                                                                                                                                                                                                                                              if ok and maximumWidth and maximumHeight then
-                                                                                                                                                                                                                                                pcall(gpu.setResolution, maximumWidth, maximumHeight)
+                                                                                                                                                                                                                                            function ui.setSleepMessage(message, sample)
+                                                                                                                                                                                                                                            ui.lastSleepText = tostring(message or "")
+                                                                                                                                                                                                                                            return ui.draw(sample or ui.lastSample, ui.lastSleepText)
+                                                                                                                                                                                                                                            end
+
+                                                                                                                                                                                                                                            function ui.init()
+                                                                                                                                                                                                                                            if not uiEnabled then
+                                                                                                                                                                                                                                              return false
+                                                                                                                                                                                                                                              end
+
+                                                                                                                                                                                                                                              if not gpu then
+                                                                                                                                                                                                                                                print("BHC UI WARNING: No GPU component found; using console mode.")
+                                                                                                                                                                                                                                                return false
                                                                                                                                                                                                                                                 end
-                                                                                                                                                                                                                                                end
 
-                                                                                                                                                                                                                                                local ok, width, height = pcall(gpu.getResolution)
+                                                                                                                                                                                                                                                pcall(gpu.setActiveBuffer, 0)
 
-                                                                                                                                                                                                                                                if not ok or not width or not height then
-                                                                                                                                                                                                                                                  print("BHC UI WARNING: Could not read screen resolution; using console mode.")
-                                                                                                                                                                                                                                                  return false
-                                                                                                                                                                                                                                                  end
+                                                                                                                                                                                                                                                if uiUseMaximumResolution then
+                                                                                                                                                                                                                                                  local ok, maximumWidth, maximumHeight = pcall(gpu.maxResolution)
 
-                                                                                                                                                                                                                                                  ui.w = width
-                                                                                                                                                                                                                                                  ui.h = height
-                                                                                                                                                                                                                                                  ui.buffer = nil
-                                                                                                                                                                                                                                                  ui.usingBuffer = false
-                                                                                                                                                                                                                                                  ui.firstDraw = true
-                                                                                                                                                                                                                                                  ui.lastLayout = nil
-
-                                                                                                                                                                                                                                                  -- OpenComputers versions with the VRAM buffer API can render the whole
-                                                                                                                                                                                                                                                  -- dashboard off-screen and copy the finished frame to the screen in one
-                                                                                                                                                                                                                                                  -- operation. That prevents visible partial redraws and flashing.
-                                                                                                                                                                                                                                                  local bufferOK, bufferIndex = pcall(
-                                                                                                                                                                                                                                                    gpu.allocateBuffer,
-                                                                                                                                                                                                                                                    width,
-                                                                                                                                                                                                                                                    height
-                                                                                                                                                                                                                                                  )
-
-                                                                                                                                                                                                                                                  if bufferOK and type(bufferIndex) == "number" then
-                                                                                                                                                                                                                                                    ui.buffer = bufferIndex
-                                                                                                                                                                                                                                                    ui.usingBuffer = true
+                                                                                                                                                                                                                                                  if ok and maximumWidth and maximumHeight then
+                                                                                                                                                                                                                                                    pcall(gpu.setResolution, maximumWidth, maximumHeight)
+                                                                                                                                                                                                                                                    end
                                                                                                                                                                                                                                                     end
 
-                                                                                                                                                                                                                                                    ui.ready = true
-                                                                                                                                                                                                                                                    pcall(gpu.setActiveBuffer, 0)
-                                                                                                                                                                                                                                                    term.clear()
-                                                                                                                                                                                                                                                    term.setCursor(1, 1)
+                                                                                                                                                                                                                                                    local ok, width, height = pcall(gpu.getResolution)
 
-                                                                                                                                                                                                                                                    return ui.draw(nil, "Waiting for request signal.")
-                                                                                                                                                                                                                                                    end
-
-                                                                                                                                                                                                                                                    local function printStatus(sample)
-                                                                                                                                                                                                                                                    sample = sample or sampleStatus()
-
-                                                                                                                                                                                                                                                    if ui and ui.ready then
-                                                                                                                                                                                                                                                      ui.status(sample)
-                                                                                                                                                                                                                                                      return
+                                                                                                                                                                                                                                                    if not ok or not width or not height then
+                                                                                                                                                                                                                                                      print("BHC UI WARNING: Could not read screen resolution; using console mode.")
+                                                                                                                                                                                                                                                      return false
                                                                                                                                                                                                                                                       end
 
-                                                                                                                                                                                                                                                      local stabilityText = "UNKNOWN"
+                                                                                                                                                                                                                                                      ui.w = width
+                                                                                                                                                                                                                                                      ui.h = height
+                                                                                                                                                                                                                                                      ui.buffer = nil
+                                                                                                                                                                                                                                                      ui.usingBuffer = false
+                                                                                                                                                                                                                                                      ui.firstDraw = true
+                                                                                                                                                                                                                                                      ui.lastLayout = nil
 
-                                                                                                                                                                                                                                                      if sample.stability ~= nil then
-                                                                                                                                                                                                                                                        stabilityText = string.format(
-                                                                                                                                                                                                                                                          "%.1f%% %s",
-                                                                                                                                                                                                                                                          sample.stability,
-                                                                                                                                                                                                                                                          sample.stabilityType
-                                                                                                                                                                                                                                                        )
+                                                                                                                                                                                                                                                      -- OpenComputers versions with the VRAM buffer API can render the whole
+                                                                                                                                                                                                                                                      -- dashboard off-screen and copy the finished frame to the screen in one
+                                                                                                                                                                                                                                                      -- operation. That prevents visible partial redraws and flashing.
+                                                                                                                                                                                                                                                      local bufferOK, bufferIndex = pcall(
+                                                                                                                                                                                                                                                        gpu.allocateBuffer,
+                                                                                                                                                                                                                                                        width,
+                                                                                                                                                                                                                                                        height
+                                                                                                                                                                                                                                                      )
+
+                                                                                                                                                                                                                                                      if bufferOK and type(bufferIndex) == "number" then
+                                                                                                                                                                                                                                                        ui.buffer = bufferIndex
+                                                                                                                                                                                                                                                        ui.usingBuffer = true
                                                                                                                                                                                                                                                         end
 
-                                                                                                                                                                                                                                                        print(string.format(
-                                                                                                                                                                                                                                                          "BHC: T %s | Hole %s | STAB %s | Recipe %s %.1f%% (%s/%s) | ST %s | TX %d | Tank %s L",
+                                                                                                                                                                                                                                                        ui.ready = true
+                                                                                                                                                                                                                                                        pcall(gpu.setActiveBuffer, 0)
+                                                                                                                                                                                                                                                        term.clear()
+                                                                                                                                                                                                                                                        term.setCursor(1, 1)
+
+                                                                                                                                                                                                                                                        return ui.draw(nil, "Waiting for request signal.")
+                                                                                                                                                                                                                                                        end
+
+                                                                                                                                                                                                                                                        local function printStatus(sample)
+                                                                                                                                                                                                                                                        sample = sample or sampleStatus()
+
+                                                                                                                                                                                                                                                        if ui and ui.ready then
+                                                                                                                                                                                                                                                          ui.status(sample)
+                                                                                                                                                                                                                                                          return
+                                                                                                                                                                                                                                                          end
+
+                                                                                                                                                                                                                                                          local stabilityText = "UNKNOWN"
+
+                                                                                                                                                                                                                                                          if sample.stability ~= nil then
+                                                                                                                                                                                                                                                            stabilityText = string.format(
+                                                                                                                                                                                                                                                              "%.1f%% %s",
+                                                                                                                                                                                                                                                              sample.stability,
+                                                                                                                                                                                                                                                              sample.stabilityType
+                                                                                                                                                                                                                                                            )
+                                                                                                                                                                                                                                                            end
+
+                                                                                                                                                                                                                                                            print(string.format(
+                                                                                                                                                                                                                                                              "BHC: T %s | Hole %s | STAB %s | Recipe %s %.1f%% (%s/%s) | ST %s | TX %d | Tank %s L",
                                                                                                                                                                                                                                                                 formatElapsed(sample.elapsed),
                                                                                                                                                                                                                                                                 sample.holeOpen and "OPEN" or "CLOSED",
                                                                                                                                                                                                                                                                 stabilityText,
@@ -1460,70 +1511,108 @@ if not unicodeOK then
                                                                                                                                                                                                                                                                 flowText(sample),
                                                                                                                                                                                                                                                                 sample.tx,
                                                                                                                                                                                                                                                                 numberText(sample.tank)
-                                                                                                                                                                                                                                                        ))
-                                                                                                                                                                                                                                                        end
-
-                                                                                                                                                                                                                                                        local function enableSpacetime()
-                                                                                                                                                                                                                                                        local now = computer.uptime()
-                                                                                                                                                                                                                                                        local estimated = getEstimatedStability(
-                                                                                                                                                                                                                                                          now,
-                                                                                                                                                                                                                                                          getTankAmount(),
-                                                                                                                                                                                                                                                                getTX()
-                                                                                                                                                                                                                                                        )
-
-                                                                                                                                                                                                                                                        if state.lastActualStability
-                                                                                                                                                                                                                                                          and state.lastActualTime
-                                                                                                                                                                                                                                                          and now - state.lastActualTime <= 2 then
-
-                                                                                                                                                                                                                                                          estimated = state.lastActualStability
-                                                                                                                                                                                                                                                          end
-
-                                                                                                                                                                                                                                                          state.stability = estimated or targetStability
-                                                                                                                                                                                                                                                          state.stabilityTime = now
-                                                                                                                                                                                                                                                          state.spacetimeOn = true
-                                                                                                                                                                                                                                                          state.spacetimeOnAt = now
-                                                                                                                                                                                                                                                          state.lastTank = getTankAmount()
-                                                                                                                                                                                                                                                          state.fallbackLossStart = nil
-                                                                                                                                                                                                                                                          state.fallbackLossStability = nil
-
-                                                                                                                                                                                                                                                          redstone.setOutput(transmitterSide, 15)
-                                                                                                                                                                                                                                                          emit("BHC: ST transmitter enabled!", C.good)
-                                                                                                                                                                                                                                                          end
-
-                                                                                                                                                                                                                                                          local function disableSpacetime(showMessage)
-                                                                                                                                                                                                                                                          local now = computer.uptime()
-                                                                                                                                                                                                                                                          local estimated = getEstimatedStability(
-                                                                                                                                                                                                                                                            now,
-                                                                                                                                                                                                                                                            getTankAmount(),
-                                                                                                                                                                                                                                                                getTX()
-                                                                                                                                                                                                                                                          )
-
-                                                                                                                                                                                                                                                          if state.lastActualStability
-                                                                                                                                                                                                                                                            and state.lastActualTime
-                                                                                                                                                                                                                                                            and now - state.lastActualTime <= 2 then
-
-                                                                                                                                                                                                                                                            estimated = state.lastActualStability
+                                                                                                                                                                                                                                                            ))
                                                                                                                                                                                                                                                             end
 
-                                                                                                                                                                                                                                                            state.stability = estimated or state.stability
-                                                                                                                                                                                                                                                            state.stabilityTime = now
-                                                                                                                                                                                                                                                            state.spacetimeOn = false
-                                                                                                                                                                                                                                                            state.spacetimeOnAt = nil
-                                                                                                                                                                                                                                                            state.lastTank = getTankAmount()
-                                                                                                                                                                                                                                                            state.fallbackLossStart = nil
-                                                                                                                                                                                                                                                            state.fallbackLossStability = nil
+                                                                                                                                                                                                                                                            local function enableSpacetime()
+                                                                                                                                                                                                                                                            local now = computer.uptime()
+                                                                                                                                                                                                                                                            local estimated = getEstimatedStability(
+                                                                                                                                                                                                                                                              now,
+                                                                                                                                                                                                                                                              getTankAmount(),
+                                                                                                                                                                                                                                                                getTX()
+                                                                                                                                                                                                                                                            )
 
-                                                                                                                                                                                                                                                            redstone.setOutput(transmitterSide, 0)
+                                                                                                                                                                                                                                                            if state.lastActualStability
+                                                                                                                                                                                                                                                              and state.lastActualTime
+                                                                                                                                                                                                                                                              and now - state.lastActualTime <= 2 then
 
-                                                                                                                                                                                                                                                            if showMessage then
-                                                                                                                                                                                                                                                              emit("BHC: ST transmitter disabled!")
+                                                                                                                                                                                                                                                              estimated = state.lastActualStability
                                                                                                                                                                                                                                                               end
-                                                                                                                                                                                                                                                              end
 
-                                                                                                                                                                                                                                                              -- ==================== CLOSURE HANDLING ====================
+                                                                                                                                                                                                                                                              state.stability = estimated or targetStability
+                                                                                                                                                                                                                                                              state.stabilityTime = now
+                                                                                                                                                                                                                                                              state.spacetimeOn = true
+                                                                                                                                                                                                                                                              state.spacetimeOnAt = now
+                                                                                                                                                                                                                                                              state.lastTank = getTankAmount()
+                                                                                                                                                                                                                                                              state.fallbackLossStart = nil
+                                                                                                                                                                                                                                                              state.fallbackLossStability = nil
 
-                                                                                                                                                                                                                                                              local function confirmHoleClosed()
-                                                                                                                                                                                                                                                              if isHoleOpen() then
+                                                                                                                                                                                                                                                              local setOK, setError = pcall(
+                                                                                                                                                                                                                                                                redstone.setOutput,
+                                                                                                                                                                                                                                                                transmitterSide,
+                                                                                                                                                                                                                                                                15
+                                                                                                                                                                                                                                                              )
+
+                                                                                                                                                                                                                                                              if not setOK then
+                                                                                                                                                                                                                                                                state.spacetimeOn = false
+                                                                                                                                                                                                                                                                emit(
+                                                                                                                                                                                                                                                                "BHC CRITICAL: Could not enable ST redstone output: "
+                                                                                                                                                                                                                                                                .. cleanText(setError),
+                                                                                                                                                                                                                                                                C.bad
+                                                                                                                                                                                                                                                                )
+                                                                                                                                                                                                                                                                return false
+                                                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                                                os.sleep(0.1)
+
+                                                                                                                                                                                                                                                                local output = getTX()
+
+                                                                                                                                                                                                                                                                if output < 15 then
+                                                                                                                                                                                                                                                                -- Retry once in case the first component write was delayed.
+                                                                                                                                                                                                                                                                pcall(redstone.setOutput, transmitterSide, 15)
+                                                                                                                                                                                                                                                                os.sleep(0.1)
+                                                                                                                                                                                                                                                                output = getTX()
+                                                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                                                if output < 15 then
+                                                                                                                                                                                                                                                                state.spacetimeOn = false
+                                                                                                                                                                                                                                                                emit(
+                                                                                                                                                                                                                                                                "BHC CRITICAL: ST transmitter output did not reach 15; TX is "
+                                                                                                                                                                                                                                                                .. tostring(output)
+                                                                                                                                                                                                                                                                .. ".",
+                                                                                                                                                                                                                                                                C.bad
+                                                                                                                                                                                                                                                                )
+                                                                                                                                                                                                                                                                return false
+                                                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                                                emit("BHC: ST transmitter enabled; TX confirmed at 15!", C.good)
+                                                                                                                                                                                                                                                                return true
+                                                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                                                local function disableSpacetime(showMessage)
+                                                                                                                                                                                                                                                                local now = computer.uptime()
+                                                                                                                                                                                                                                                                local estimated = getEstimatedStability(
+                                                                                                                                                                                                                                                                now,
+                                                                                                                                                                                                                                                                getTankAmount(),
+                                                                                                                                                                                                                                                                getTX()
+                                                                                                                                                                                                                                                                )
+
+                                                                                                                                                                                                                                                                if state.lastActualStability
+                                                                                                                                                                                                                                                                and state.lastActualTime
+                                                                                                                                                                                                                                                                and now - state.lastActualTime <= 2 then
+
+                                                                                                                                                                                                                                                                estimated = state.lastActualStability
+                                                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                                                state.stability = estimated or state.stability
+                                                                                                                                                                                                                                                                state.stabilityTime = now
+                                                                                                                                                                                                                                                                state.spacetimeOn = false
+                                                                                                                                                                                                                                                                state.spacetimeOnAt = nil
+                                                                                                                                                                                                                                                                state.lastTank = getTankAmount()
+                                                                                                                                                                                                                                                                state.fallbackLossStart = nil
+                                                                                                                                                                                                                                                                state.fallbackLossStability = nil
+
+                                                                                                                                                                                                                                                                redstone.setOutput(transmitterSide, 0)
+
+                                                                                                                                                                                                                                                                if showMessage then
+                                                                                                                                                                                                                                                                emit("BHC: ST transmitter disabled!")
+                                                                                                                                                                                                                                                                end
+                                                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                                                -- ==================== CLOSURE HANDLING ====================
+
+                                                                                                                                                                                                                                                                local function confirmHoleClosed()
+                                                                                                                                                                                                                                                                if isHoleOpen() then
                                                                                                                                                                                                                                                                 return false
                                                                                                                                                                                                                                                                 end
 
@@ -1868,9 +1957,9 @@ if not unicodeOK then
                                                                                                                                                                                                                                                                 local available, tankDetails, readableStockers =
                                                                                                                                                                                                                                                                 getTankInformation()
 
-                                                                                                                                                                                                                                                                local remaining, needed = calculateSpacetime(
-                                                                                                                                                                                                                                                                maxRuntime,
-                                                                                                                                                                                                                                                                available
+                                                                                                                                                                                                                                                                local remaining, needed, projectedRuntime = getSpacetimeRequirement(
+                                                                                                                                                                                                                                                                available,
+                                                                                                                                                                                                                                                                nil
                                                                                                                                                                                                                                                                 )
 
                                                                                                                                                                                                                                                                 emit("")
@@ -1908,9 +1997,11 @@ if not unicodeOK then
                                                                                                                                                                                                                                                                 emit(
                                                                                                                                                                                                                                                                 "BHC: Target "
                                                                                                                                                                                                                                                                 .. numberText(maxRuntime)
-                                                                                                                                                                                                                                                                .. "s with "
+                                                                                                                                                                                                                                                                .. "s; protecting through at least "
+                                                                                                                                                                                                                                                                .. numberText(projectedRuntime)
+                                                                                                                                                                                                                                                                .. "s requires "
                                                                                                                                                                                                                                                                 .. numberText(needed)
-                                                                                                                                                                                                                                                                .. " L ST!"
+                                                                                                                                                                                                                                                                .. " L ST."
                                                                                                                                                                                                                                                                 )
 
                                                                                                                                                                                                                                                                 emit(
@@ -1954,7 +2045,9 @@ if not unicodeOK then
                                                                                                                                                                                                                                                                 state.seedInsertedAt = computer.uptime()
                                                                                                                                                                                                                                                                 waitForHoleOpen()
 
-                                                                                                                                                                                                                                                                if maxRuntime > 100 then
+                                                                                                                                                                                                                                                                -- Always reach the configured injection stability first. Even when
+                                                                                                                                                                                                                                                                -- maxRuntime is 100 seconds, void protection may need ST to keep a long
+                                                                                                                                                                                                                                                                -- recipe alive beyond the free runtime window.
                                                                                                                                                                                                                                                                 if not statusSleep(
                                                                                                                                                                                                                                                                 math.max(100 - targetStability, 0)
                                                                                                                                                                                                                                                                 ) then
@@ -1971,12 +2064,43 @@ if not unicodeOK then
                                                                                                                                                                                                                                                                 return
                                                                                                                                                                                                                                                                 end
 
+                                                                                                                                                                                                                                                                local shouldEnableSpacetime = maxRuntime > 100 or voidProtection
+
+                                                                                                                                                                                                                                                                if shouldEnableSpacetime then
+                                                                                                                                                                                                                                                                local currentAvailable = getTankAmount()
+                                                                                                                                                                                                                                                                local currentRemaining, currentNeeded, currentProjectedRuntime =
+                                                                                                                                                                                                                                                                getSpacetimeRequirement(currentAvailable, beforeInjection)
+
                                                                                                                                                                                                                                                                 emit(string.format(
-                                                                                                                                                                                                                                                                "BHC: Injecting ST at approximately %.1f%% STAB!",
+                                                                                                                                                                                                                                                                "BHC: ST protection requires %s L for projected runtime %ss; available %s L.",
+                                                                                                                                                                                                                                                                numberText(currentNeeded),
+                                                                                                                                                                                                                                                                numberText(currentProjectedRuntime),
+                                                                                                                                                                                                                                                                numberText(currentAvailable)
+                                                                                                                                                                                                                                                                ))
+
+                                                                                                                                                                                                                                                                if currentRemaining < 0 then
+                                                                                                                                                                                                                                                                emergencyClose(
+                                                                                                                                                                                                                                                                beforeInjection,
+                                                                                                                                                                                                                                                                "Not enough ST to protect the active recipe; missing "
+                                                                                                                                                                                                                                                                .. numberText(-currentRemaining)
+                                                                                                                                                                                                                                                                .. " L."
+                                                                                                                                                                                                                                                                )
+                                                                                                                                                                                                                                                                return
+                                                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                                                emit(string.format(
+                                                                                                                                                                                                                                                                "BHC: Enabling ST at approximately %.1f%% STAB!",
                                                                                                                                                                                                                                                                 beforeInjection.stability or targetStability
                                                                                                                                                                                                                                                                 ))
 
-                                                                                                                                                                                                                                                                enableSpacetime()
+                                                                                                                                                                                                                                                                if not enableSpacetime() then
+                                                                                                                                                                                                                                                                emergencyClose(
+                                                                                                                                                                                                                                                                beforeInjection,
+                                                                                                                                                                                                                                                                "ST redstone output failed to turn on."
+                                                                                                                                                                                                                                                                )
+                                                                                                                                                                                                                                                                return
+                                                                                                                                                                                                                                                                end
+                                                                                                                                                                                                                                                                end
 
                                                                                                                                                                                                                                                                 local afterInjection = sampleStatus()
 
@@ -2011,47 +2135,60 @@ if not unicodeOK then
                                                                                                                                                                                                                                                                 if voidProtection and isRecipeActive() then
                                                                                                                                                                                                                                                                 local maxProgress = bhc.getWorkMaxProgress() or 0
                                                                                                                                                                                                                                                                 local progress = bhc.getWorkProgress() or 0
-                                                                                                                                                                                                                                                                local timeNeeded = (maxProgress - progress) / 20
+                                                                                                                                                                                                                                                                local timeNeeded = math.max(0, (maxProgress - progress) / 20)
                                                                                                                                                                                                                                                                 local stability = shutdownSample.stability or targetStability
                                                                                                                                                                                                                                                                 local extra = math.max(timeNeeded - stability + 1, 0)
 
                                                                                                                                                                                                                                                                 if extra > 0 then
+                                                                                                                                                                                                                                                                local currentAvailable = getTankAmount()
+                                                                                                                                                                                                                                                                local projectedSample = {
+                                                                                                                                                                                                                                                                recipeActive = true,
+                                                                                                                                                                                                                                                                maximum = maxProgress,
+                                                                                                                                                                                                                                                                progress = progress,
+                                                                                                                                                                                                                                                                stability = stability
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                local currentRemaining, currentNeeded, currentProjectedRuntime =
+                                                                                                                                                                                                                                                                getSpacetimeRequirement(currentAvailable, projectedSample)
+
                                                                                                                                                                                                                                                                 emit(string.format(
-                                                                                                                                                                                                                                                                "BHC: Void protection waiting %.1f additional seconds.",
-                                                                                                                                                                                                                                                                extra
+                                                                                                                                                                                                                                                                "BHC: Void protection needs %.1f more seconds; projected ST requirement is %s L through %ss.",
+                                                                                                                                                                                                                                                                extra,
+                                                                                                                                                                                                                                                                numberText(currentNeeded),
+                                                                                                                                                                                                                                                                numberText(currentProjectedRuntime)
                                                                                                                                                                                                                                                                 ))
+
+                                                                                                                                                                                                                                                                if currentRemaining < 0 then
+                                                                                                                                                                                                                                                                emergencyClose(
+                                                                                                                                                                                                                                                                shutdownSample,
+                                                                                                                                                                                                                                                                "ST reserve is too low to finish the active recipe; missing "
+                                                                                                                                                                                                                                                                .. numberText(-currentRemaining)
+                                                                                                                                                                                                                                                                .. " L."
+                                                                                                                                                                                                                                                                )
+                                                                                                                                                                                                                                                                return
+                                                                                                                                                                                                                                                                end
+
+                                                                                                                                                                                                                                                                if not state.spacetimeOn then
+                                                                                                                                                                                                                                                                if not enableSpacetime() then
+                                                                                                                                                                                                                                                                emergencyClose(
+                                                                                                                                                                                                                                                                shutdownSample,
+                                                                                                                                                                                                                                                                "ST redstone output failed during void protection."
+                                                                                                                                                                                                                                                                )
+                                                                                                                                                                                                                                                                return
+                                                                                                                                                                                                                                                                end
+                                                                                                                                                                                                                                                                end
 
                                                                                                                                                                                                                                                                 if not statusSleep(extra) then
                                                                                                                                                                                                                                                                 return
                                                                                                                                                                                                                                                                 end
                                                                                                                                                                                                                                                                 else
                                                                                                                                                                                                                                                                 emit(
-                                                                                                                                                                                                                                                                "BHC: Current recipe does not require additional protection time."
+                                                                                                                                                                                                                                                                "BHC: Current recipe can finish inside the remaining stability window."
                                                                                                                                                                                                                                                                 )
                                                                                                                                                                                                                                                                 end
                                                                                                                                                                                                                                                                 elseif voidProtection then
                                                                                                                                                                                                                                                                 emit(
-                                                                                                                                                                                                                                                                "BHC: No recipe active at shutdown; no protection wait needed."
+                                                                                                                                                                                                                                                                "BHC: No recipe active at shutdown; no additional protection time needed."
                                                                                                                                                                                                                                                                 )
-                                                                                                                                                                                                                                                                end
-                                                                                                                                                                                                                                                                else
-                                                                                                                                                                                                                                                                if not statusSleep(60) then
-                                                                                                                                                                                                                                                                return
-                                                                                                                                                                                                                                                                end
-
-                                                                                                                                                                                                                                                                if isRecipeActive() then
-                                                                                                                                                                                                                                                                local maxProgress = bhc.getWorkMaxProgress() or 0
-                                                                                                                                                                                                                                                                local progress = bhc.getWorkProgress() or 0
-                                                                                                                                                                                                                                                                local recipeSeconds = math.max(1, maxProgress / 20)
-                                                                                                                                                                                                                                                                local timeRemaining = 40 - (maxProgress - progress) / 20
-                                                                                                                                                                                                                                                                local waitTime = math.floor(
-                                                                                                                                                                                                                                                                timeRemaining / recipeSeconds
-                                                                                                                                                                                                                                                                ) * recipeSeconds - 1
-
-                                                                                                                                                                                                                                                                if not statusSleep(math.max(waitTime, 0)) then
-                                                                                                                                                                                                                                                                return
-                                                                                                                                                                                                                                                                end
-                                                                                                                                                                                                                                                                end
                                                                                                                                                                                                                                                                 end
 
                                                                                                                                                                                                                                                                 if not holeStillOpen() then
