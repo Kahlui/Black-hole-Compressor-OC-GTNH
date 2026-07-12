@@ -1,4 +1,4 @@
-Full featured BHC Automation. 
+Full featured BHC Automation. Pull lever to ensure idle before sending MHDCSM Superdense plates. No checks are made at start of recipe
 
 Automation is verry verry simular to what is on the wiki as of 7/10/26
 
