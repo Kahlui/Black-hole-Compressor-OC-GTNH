@@ -19,7 +19,7 @@ Place a fluid storage bus set to EXTRACT ONLY on the side of the super stock rep
 
 Place an ME interface next to the transposer with black hole seeds in the first slot and black hole collapsers in the second slot. Connect the ME interface and super stock replenisher to the main network (green).
 
-Optionally, place a black hole utility hatch set to STATIC MODE underneath the redstone I/O if NOT using black hole collapsers. This helps track the 15 minute decay.
+Required, place a black hole utility hatch set to STATIC MODE underneath the redstone I/O
 
 Place a super stock replenisher above the transposer. Insert a high-capacity fluid storage cell and filter it to a reasonable amount of spacetime. For example, if the BHC is never going to run longer than 200s, then 500L of Spacetime is enough.
 Place a fluid storage bus set to EXTRACT ONLY on the side of the super stock replenisher. Connect the fluid storage bus to the fluid subnetwork (light blue). Power the subnetwork with a neutronium energy anchor.
@@ -47,5 +47,6 @@ Launch the script by typing bhc. It automatically detects when items enter the b
 
 
 See Pictures inside repository for refrences to what it should look like. Code prompted by Kahlui/Zach Writen by GPT 5.6
+Usefull tool. NOT WRITEN BY ME https://www.desmos.com/calculator/yrnt694v3h
 
 
