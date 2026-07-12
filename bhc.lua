@@ -16,7 +16,7 @@ local maxRuntime = 100
 local targetStability = 18
 local emergencyCloseStability = 10
 local manualCloseConfirmSeconds = 5
-local sleepMessageInterval = 15
+local sleepMessageInterval = 5
 
 local closeWhenIdle = true
 local idleCloseSeconds = 10
@@ -95,7 +95,43 @@ local sleepMessages = {
   "BHC: To err is human; to automate the error requires OpenComputers.",
   "BHC: If at first you do not succeed, increase parallel and blame the power grid.",
   "BHC: Reality is merely a suggestion until the Utility Hatch confirms it.",
-  "BHC: The machine is resting. The recipe tree is merely gathering strength."
+  "BHC: The machine is resting. The recipe tree is merely gathering strength.",
+
+  -- Kahlui
+  "BHC: Kahlui finished upgrading the infrastructure. Somehow, there is even less power now.",
+  "BHC: Kahlui says he is not stealing the power; he is reallocating it toward larger infrastructure.",
+  "BHC: Power shortage detected. Kahlui has probably built another machine that consumes several suns.",
+  "BHC: Kahlui upgraded the cables so he could steal the power more efficiently.",
+  "BHC: Kahlui promised the new infrastructure would solve the power problem. It created three new ones.",
+  "BHC: The grid had spare capacity for almost four seconds before Kahlui noticed.",
+  "BHC: Kahlui has confirmed the infrastructure is future-proof until his next project starts.",
+  "BHC: Every time the power grid catches up, Kahlui increases the infrastructure requirements.",
+  "BHC: Kahlui is not draining the grid. The grid simply lacks the ambition to keep up.",
+  "BHC: Infrastructure report: Kahlui found unused power and corrected the oversight.",
+
+  -- Superfrogman98
+  "BHC: Superfrogman98 says bees are frogs. No supporting evidence has survived review.",
+  "BHC: Superfrogman98 insists bees are frogs with wings. Biology has filed a complaint.",
+  "BHC: Superfrogman98 identified another bee as a frog. The bee declined to comment.",
+  "BHC: According to Superfrogman98, honey is simply frog syrup.",
+  "BHC: Superfrogman98 says buzzing is just advanced croaking.",
+  "BHC: Superfrogman98 has classified the apiary as a very small frog pond.",
+  "BHC: A bee flew past. Superfrogman98 immediately called it an airborne frog.",
+  "BHC: Superfrogman98 remains certain that bees are frogs. Reality remains unconvinced.",
+  "BHC: Superfrogman98 claims the wings are merely a frog mobility upgrade.",
+  "BHC: Scientific consensus says bee. Superfrogman98 says frog. The argument continues.",
+
+  -- Craftspirit_MC
+  "BHC: Craftspirit_MC finished expanding power generation. Kahlui immediately expanded everything else.",
+  "BHC: Craftspirit_MC added more power. Kahlui interpreted this as permission to scale the infrastructure again.",
+  "BHC: Craftspirit_MC cannot catch a break because Kahlui keeps catching every spare amp first.",
+  "BHC: The grid was finally stable until Kahlui told Craftspirit_MC about the next infrastructure upgrade.",
+  "BHC: Craftspirit_MC built enough power for the factory. Kahlui then built enough factory for twice that power.",
+  "BHC: Craftspirit_MC has requested one day without Kahlui scaling the infrastructure. Request denied.",
+  "BHC: Craftspirit_MC increased generation by ten percent. Kahlui increased demand by eleven.",
+  "BHC: Craftspirit_MC keeps building power plants while Kahlui keeps discovering new ways to consume them.",
+  "BHC: Craftspirit_MC almost caught up with demand, so Kahlui added another processing wing.",
+  "BHC: Power generation belongs to Craftspirit_MC. Power consumption belongs almost entirely to Kahlui."
 }
 
 -- ========================== HELPERS ==========================
