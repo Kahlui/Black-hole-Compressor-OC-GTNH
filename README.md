@@ -137,3 +137,6 @@ The dashboard uses a full layout at resolutions of at least 100×35 and a compac
 Original build and script direction: Kahlui/Zach, with GPT assistance. The original README credited GPT 5.6. The author also linked an external [Spacetime calculator](https://www.desmos.com/calculator/yrnt694v3h), which is not part of this repository.
 
 
+https://pastebin.com/rU0s9vee
+
+
